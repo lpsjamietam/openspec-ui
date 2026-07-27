@@ -19,6 +19,26 @@ pub enum ChangeStatus {
     Archived,
 }
 
+/// State of one artifact in a change, using the same vocabulary as
+/// `openspec status`: complete (written), ready (deps met, not written yet),
+/// blocked (waiting on other artifacts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactState {
+    Complete,
+    Ready,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Artifact {
+    pub id: String,
+    pub state: ArtifactState,
+    /// Artifacts this one waits for, when blocked
+    pub missing_deps: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
@@ -31,6 +51,10 @@ pub struct Change {
     pub has_tasks: bool,
     pub has_design: bool,
     pub task_stats: Option<TaskStats>,
+    /// Workflow schema from .openspec.yaml (OpenSpec >= 1.0), e.g. "spec-driven"
+    pub schema: Option<String>,
+    /// Per-artifact progress through the change's workflow
+    pub artifacts: Vec<Artifact>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +68,8 @@ pub struct ChangeDetail {
     pub design: Option<String>,
     pub specs: Vec<SpecContent>,
     pub tasks: Option<TasksContent>,
+    pub schema: Option<String>,
+    pub artifacts: Vec<Artifact>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,7 +126,7 @@ struct IdeaFrontmatter {
 fn parse_idea_frontmatter(content: &str) -> Option<IdeaFrontmatter> {
     let lines: Vec<&str> = content.lines().collect();
     
-    if !lines.get(0).map(|l| l.trim() == "---").unwrap_or(false) {
+    if !lines.first().map(|l| l.trim() == "---").unwrap_or(false) {
         return None;
     }
     
@@ -172,6 +198,71 @@ pub fn parse_task_stats(content: &str) -> TaskStats {
     }
 }
 
+/// Read the workflow schema from a change's `.openspec.yaml`.
+///
+/// OpenSpec >= 1.0 marks every change directory with this file the moment it is
+/// created, before any artifact is written. It is the only reliable signal that a
+/// directory is a change rather than stray content.
+fn read_change_schema(change_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(change_path.join(".openspec.yaml")).ok()?;
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("schema:") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    // Present but without a readable schema key: still a change.
+    Some("spec-driven".to_string())
+}
+
+/// Build the artifact chain for the spec-driven workflow: proposal gates design
+/// and specs, which together gate tasks. Computed from the files on disk so the
+/// dashboard stays read-only and needs no OpenSpec install per repo.
+fn compute_artifacts(
+    has_proposal: bool,
+    has_design: bool,
+    has_specs: bool,
+    has_tasks: bool,
+) -> Vec<Artifact> {
+    let state = |present: bool, missing: Vec<&str>| {
+        if present {
+            (ArtifactState::Complete, Vec::new())
+        } else if missing.is_empty() {
+            (ArtifactState::Ready, Vec::new())
+        } else {
+            (
+                ArtifactState::Blocked,
+                missing.into_iter().map(String::from).collect(),
+            )
+        }
+    };
+
+    let blocked_by_proposal = if has_proposal { vec![] } else { vec!["proposal"] };
+    let mut blocked_by_both = Vec::new();
+    if !has_design {
+        blocked_by_both.push("design");
+    }
+    if !has_specs {
+        blocked_by_both.push("specs");
+    }
+
+    [
+        ("proposal", state(has_proposal, vec![])),
+        ("design", state(has_design, blocked_by_proposal.clone())),
+        ("specs", state(has_specs, blocked_by_proposal)),
+        ("tasks", state(has_tasks, blocked_by_both)),
+    ]
+    .into_iter()
+    .map(|(id, (state, missing_deps))| Artifact {
+        id: id.to_string(),
+        state,
+        missing_deps,
+    })
+    .collect()
+}
+
 /// Compute change status from artifacts and task stats
 fn compute_status(has_tasks: bool, task_stats: &Option<TaskStats>, is_archived: bool) -> ChangeStatus {
     if is_archived {
@@ -205,9 +296,13 @@ fn scan_change(change_path: &Path, source_id: &str, is_archived: bool) -> Option
     let has_tasks = tasks_path.exists();
     let has_design = design_path.exists();
     let has_specs = specs_path.exists() && specs_path.is_dir();
+    let schema = read_change_schema(change_path);
 
-    // Only include if it has at least a proposal
-    if !has_proposal {
+    // A directory is a change if OpenSpec marked it (.openspec.yaml, >= 1.0) or it
+    // already has a proposal (pre-1.0 layout). Requiring a proposal alone hid every
+    // freshly created change, since OpenSpec writes the marker first and the
+    // proposal only once the agent drafts it.
+    if schema.is_none() && !has_proposal {
         return None;
     }
 
@@ -231,6 +326,8 @@ fn scan_change(change_path: &Path, source_id: &str, is_archived: bool) -> Option
         has_tasks,
         has_design,
         task_stats,
+        schema,
+        artifacts: compute_artifacts(has_proposal, has_design, has_specs, has_tasks),
     })
 }
 
@@ -244,31 +341,27 @@ pub fn scan_changes(source_path: &Path, source_id: &str) -> Vec<Change> {
     }
 
     // Scan active changes
-    for entry in std::fs::read_dir(&changes_path).into_iter().flatten() {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    for entry in std::fs::read_dir(&changes_path).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-            // Skip archive directory
-            if name == "archive" {
-                continue;
-            }
+        // Skip archive directory
+        if name == "archive" {
+            continue;
+        }
 
-            if let Some(change) = scan_change(&path, source_id, false) {
-                changes.push(change);
-            }
+        if let Some(change) = scan_change(&path, source_id, false) {
+            changes.push(change);
         }
     }
 
     // Scan archived changes
     let archive_path = changes_path.join("archive");
     if archive_path.exists() {
-        for entry in std::fs::read_dir(&archive_path).into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if let Some(change) = scan_change(&path, source_id, true) {
-                    changes.push(change);
-                }
+        for entry in std::fs::read_dir(&archive_path).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if let Some(change) = scan_change(&path, source_id, true) {
+                changes.push(change);
             }
         }
     }
@@ -286,15 +379,13 @@ pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str)
         // Try archive - need to search for name ending
         let archive_path = source_path.join("changes").join("archive");
         if archive_path.exists() {
-            for entry in std::fs::read_dir(&archive_path).into_iter().flatten() {
-                if let Ok(entry) = entry {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if name_str.ends_with(change_name) || name_str == change_name {
-                        change_path = entry.path();
-                        is_archived = true;
-                        break;
-                    }
+            for entry in std::fs::read_dir(&archive_path).into_iter().flatten().flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.ends_with(change_name) || name_str == change_name {
+                    change_path = entry.path();
+                    is_archived = true;
+                    break;
                 }
             }
         }
@@ -324,23 +415,27 @@ pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str)
     // Scan specs within the change
     let mut specs = Vec::new();
     if specs_path.exists() {
-        for entry in WalkDir::new(&specs_path).min_depth(1) {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() && path.extension().map_or(false, |e| e == "md") {
-                    let relative = path.strip_prefix(&specs_path).unwrap_or(path);
-                    if let Ok(content) = std::fs::read_to_string(path) {
-                        specs.push(SpecContent {
-                            path: relative.display().to_string(),
-                            content,
-                        });
-                    }
+        for entry in WalkDir::new(&specs_path).min_depth(1).into_iter().flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|e| e == "md") {
+                let relative = path.strip_prefix(&specs_path).unwrap_or(path);
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    specs.push(SpecContent {
+                        path: relative.display().to_string(),
+                        content,
+                    });
                 }
             }
         }
     }
 
     let name = change_path.file_name()?.to_str()?.to_string();
+    let artifacts = compute_artifacts(
+        proposal.is_some(),
+        design.is_some(),
+        !specs.is_empty(),
+        has_tasks,
+    );
 
     Some(ChangeDetail {
         id: format!("{}/{}", source_id, change_name),
@@ -351,6 +446,8 @@ pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str)
         design,
         specs,
         tasks,
+        schema: read_change_schema(&change_path),
+        artifacts,
     })
 }
 
@@ -360,39 +457,35 @@ pub fn scan_specs(source_path: &Path, source_id: &str) -> Vec<Spec> {
     let specs_path = source_path.join("specs");
 
     // Include root-level markdown files
-    for entry in std::fs::read_dir(source_path).into_iter().flatten() {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |e| e == "md") {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip common change files and changes directory
-                if name != "proposal.md" && name != "tasks.md" && name != "design.md" && name != "changes" {
-                    let id = format!("{}/{}", source_id, name.replace(".md", ""));
-                    specs.push(Spec {
-                        id,
-                        source_id: source_id.to_string(),
-                        path: name.to_string(),
-                    });
-                }
+    for entry in std::fs::read_dir(source_path).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|e| e == "md") {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Skip common change files and changes directory
+            if name != "proposal.md" && name != "tasks.md" && name != "design.md" && name != "changes" {
+                let id = format!("{}/{}", source_id, name.replace(".md", ""));
+                specs.push(Spec {
+                    id,
+                    source_id: source_id.to_string(),
+                    path: name.to_string(),
+                });
             }
         }
     }
 
     // Scan specs/ directory
     if specs_path.exists() {
-        for entry in WalkDir::new(&specs_path).min_depth(1) {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() && path.extension().map_or(false, |e| e == "md") {
-                    let relative = path.strip_prefix(&specs_path).unwrap_or(path);
-                    let path_str = relative.display().to_string();
-                    let id = format!("{}/{}", source_id, path_str.replace("/spec.md", "").replace(".md", ""));
-                    specs.push(Spec {
-                        id,
-                        source_id: source_id.to_string(),
-                        path: path_str,
-                    });
-                }
+        for entry in WalkDir::new(&specs_path).min_depth(1).into_iter().flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|e| e == "md") {
+                let relative = path.strip_prefix(&specs_path).unwrap_or(path);
+                let path_str = relative.display().to_string();
+                let id = format!("{}/{}", source_id, path_str.replace("/spec.md", "").replace(".md", ""));
+                specs.push(Spec {
+                    id,
+                    source_id: source_id.to_string(),
+                    path: path_str,
+                });
             }
         }
     }
@@ -433,24 +526,22 @@ pub fn scan_ideas(source_path: &Path, source_id: &str) -> Vec<Idea> {
         return ideas;
     }
 
-    for entry in std::fs::read_dir(&ideas_path).into_iter().flatten() {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            
-            if path.is_file() && path.extension().map_or(false, |e| e == "md") {
-                if let Some(content) = std::fs::read_to_string(&path).ok() {
-                    if let Some(frontmatter) = parse_idea_frontmatter(&content) {
-                        let (title, description) = extract_idea_title_and_description(&content);
-                        ideas.push(Idea {
-                            id: format!("{}/{}", source_id, frontmatter.id),
-                            source_id: source_id.to_string(),
-                            project_id: frontmatter.project_id,
-                            title,
-                            description,
-                            created_at: frontmatter.created_at,
-                            updated_at: frontmatter.updated_at,
-                        });
-                    }
+    for entry in std::fs::read_dir(&ideas_path).into_iter().flatten().flatten() {
+        let path = entry.path();
+        
+        if path.is_file() && path.extension().is_some_and(|e| e == "md") {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Some(frontmatter) = parse_idea_frontmatter(&content) {
+                    let (title, description) = extract_idea_title_and_description(&content);
+                    ideas.push(Idea {
+                        id: format!("{}/{}", source_id, frontmatter.id),
+                        source_id: source_id.to_string(),
+                        project_id: frontmatter.project_id,
+                        title,
+                        description,
+                        created_at: frontmatter.created_at,
+                        updated_at: frontmatter.updated_at,
+                    });
                 }
             }
         }
@@ -611,6 +702,78 @@ Description"#;
         let stats = parse_task_stats(content);
         assert_eq!(stats.total, 5);
         assert_eq!(stats.done, 2);
+    }
+
+    #[test]
+    fn test_compute_artifacts_empty_change() {
+        // A change OpenSpec just created: marker only, nothing written yet.
+        let artifacts = compute_artifacts(false, false, false, false);
+        let by_id = |id: &str| artifacts.iter().find(|a| a.id == id).unwrap().clone();
+
+        assert_eq!(by_id("proposal").state, ArtifactState::Ready);
+        assert_eq!(by_id("design").state, ArtifactState::Blocked);
+        assert_eq!(by_id("design").missing_deps, vec!["proposal"]);
+        assert_eq!(by_id("tasks").state, ArtifactState::Blocked);
+        assert_eq!(by_id("tasks").missing_deps, vec!["design", "specs"]);
+    }
+
+    #[test]
+    fn test_compute_artifacts_unblocks_after_proposal() {
+        let artifacts = compute_artifacts(true, false, false, false);
+        let by_id = |id: &str| artifacts.iter().find(|a| a.id == id).unwrap().clone();
+
+        assert_eq!(by_id("proposal").state, ArtifactState::Complete);
+        assert_eq!(by_id("design").state, ArtifactState::Ready);
+        assert_eq!(by_id("specs").state, ArtifactState::Ready);
+        // tasks still waits for both
+        assert_eq!(by_id("tasks").state, ArtifactState::Blocked);
+        assert_eq!(by_id("tasks").missing_deps, vec!["design", "specs"]);
+    }
+
+    #[test]
+    fn test_compute_artifacts_all_written() {
+        let artifacts = compute_artifacts(true, true, true, true);
+        assert!(artifacts.iter().all(|a| a.state == ArtifactState::Complete));
+        assert!(artifacts.iter().all(|a| a.missing_deps.is_empty()));
+    }
+
+    #[test]
+    fn test_read_change_schema() {
+        let dir = std::env::temp_dir().join(format!("ospec-ui-schema-{}", std::process::id()));
+        let change = dir.join("changes").join("some-change");
+        std::fs::create_dir_all(&change).unwrap();
+
+        // No marker: not recognised as a change by itself
+        assert_eq!(read_change_schema(&change), None);
+
+        std::fs::write(
+            change.join(".openspec.yaml"),
+            "schema: spec-driven\ncreated: 2026-07-26\n",
+        )
+        .unwrap();
+        assert_eq!(read_change_schema(&change).as_deref(), Some("spec-driven"));
+
+        // Marker without a readable schema key still counts as a change
+        std::fs::write(change.join(".openspec.yaml"), "created: 2026-07-26\n").unwrap();
+        assert_eq!(read_change_schema(&change).as_deref(), Some("spec-driven"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_scan_change_finds_marker_only_change() {
+        let dir = std::env::temp_dir().join(format!("ospec-ui-scan-{}", std::process::id()));
+        let change = dir.join("changes").join("fresh-change");
+        std::fs::create_dir_all(&change).unwrap();
+        std::fs::write(change.join(".openspec.yaml"), "schema: spec-driven\n").unwrap();
+
+        let found = scan_change(&change, "repo", false).expect("marker-only change must be visible");
+        assert_eq!(found.name, "fresh-change");
+        assert_eq!(found.status, ChangeStatus::Draft);
+        assert!(!found.has_proposal);
+        assert_eq!(found.schema.as_deref(), Some("spec-driven"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

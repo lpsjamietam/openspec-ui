@@ -12,6 +12,16 @@ export interface TaskStats {
 
 export type ChangeStatus = 'draft' | 'todo' | 'in_progress' | 'done' | 'archived';
 
+/** Same vocabulary as `openspec status`. */
+export type ArtifactState = 'complete' | 'ready' | 'blocked';
+
+export interface Artifact {
+  id: string;
+  state: ArtifactState;
+  /** Artifacts this one waits for, when blocked */
+  missingDeps: string[];
+}
+
 export interface Change {
   id: string;
   name: string;
@@ -22,7 +32,9 @@ export interface Change {
   hasTasks: boolean;
   hasDesign: boolean;
   taskStats: TaskStats | null;
-  readyForReview: boolean;
+  /** Workflow schema from .openspec.yaml (OpenSpec >= 1.0) */
+  schema: string | null;
+  artifacts: Artifact[];
 }
 
 export interface SpecContent {
@@ -44,6 +56,8 @@ export interface ChangeDetail {
   design: string | null;
   specs: SpecContent[];
   tasks: TasksContent | null;
+  schema: string | null;
+  artifacts: Artifact[];
 }
 
 export interface Spec {

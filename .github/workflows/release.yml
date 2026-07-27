@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+            asset: darwin-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+            asset: darwin-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x86_64)
+            asset: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x86_64)
+            asset: windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The frontend is embedded into the binary via rust-embed, so it must be
+      # built before cargo runs — otherwise ../frontend/dist is empty and the
+      # binary serves nothing.
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          key: ${{ matrix.target }}
+
+      - name: Build binary
+        working-directory: backend
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          STAGE="openspec-ui-${VERSION}-${{ matrix.asset }}"
+          mkdir -p "$STAGE"
+          cp "backend/target/${{ matrix.target }}/release/openspec-ui" "$STAGE/"
+          cp README.md LICENSE "$STAGE/" 2>/dev/null || cp README.md "$STAGE/"
+          zip -r "${STAGE}.zip" "$STAGE"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $stage = "openspec-ui-$version-${{ matrix.asset }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "backend/target/${{ matrix.target }}/release/openspec-ui.exe" $stage
+          Copy-Item README.md $stage
+          if (Test-Path LICENSE) { Copy-Item LICENSE $stage }
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.asset }}
+          path: '*.zip'
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release create "$VERSION" dist/*.zip \
+            --title "$VERSION" \
+            --notes-from-tag \
+            || gh release upload "$VERSION" dist/*.zip --clobber
