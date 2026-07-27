@@ -1,6 +1,12 @@
-# OpenSpec UI
+# OpenSpec UI — a web dashboard for OpenSpec
 
-A dashboard for tracking [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes across multiple repositories. Built for agentic development workflows.
+[![CI](https://github.com/ToruAI/openspec-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/ToruAI/openspec-ui/actions/workflows/ci.yml)
+[![OpenSpec 1.6](https://img.shields.io/badge/OpenSpec-1.6%20compatible-blue)](https://github.com/Fission-AI/OpenSpec)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**A single kanban board over every [OpenSpec](https://github.com/Fission-AI/OpenSpec) repo you work in** — which change is where in the workflow, what is ready to write next, and what is still blocked. `openspec view` shows you one repo in the terminal; this shows all of them, in a browser, on your phone too.
+
+Read-only, runs locally, one binary. It never writes to your specs.
 
 <p align="center">
   <img src="./desktop.png" alt="OpenSpec UI Desktop" width="600"/>
@@ -31,10 +37,13 @@ OpenSpec UI reads this structure and displays it as a kanban board.
 
 OpenSpec UI gives you a bird's-eye view of all your AI-assisted projects:
 
-- **Capture ideas** — Quick-capture thoughts that AI agents can later expand into proposals
-- **Track progress** — Watch changes move from Ideas → Todo → In Progress → Done
-- **Multi-repo visibility** — Monitor multiple OpenSpec repositories from one dashboard
-- **Real-time updates** — Auto-refreshes as your agents work through tasks
+- **Artifact chain per change** — see `proposal → design → specs → tasks` with each one marked written, **ready to write next**, or blocked and waiting on another artifact. Same vocabulary as `openspec status`, read straight from disk.
+- **Multi-repo visibility** — monitor every OpenSpec repository from one board
+- **Capture ideas** — quick-capture thoughts that AI agents can later expand into proposals
+- **Track progress** — watch changes move from Ideas → Todo → In Progress → Done
+- **Real-time updates** — auto-refreshes as your agents work through tasks
+
+Because the artifact states are derived from the files themselves, the dashboard needs no OpenSpec install in the repos it watches, and it works the same whether a change was created by you or by an agent.
 
 ## The Workflow
 
@@ -59,9 +68,10 @@ Download the latest release from [GitHub Releases](https://github.com/ToruAI/ope
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `openspec-ui-v0.1.0-darwin-aarch64.zip` |
-| Linux (x86_64) | `openspec-ui-v0.1.0-linux-x86_64.zip` |
-| Windows (x86_64) | `openspec-ui-v0.1.0-windows-x86_64.zip` |
+| macOS (Apple Silicon) | `openspec-ui-<version>-darwin-aarch64.zip` |
+| macOS (Intel) | `openspec-ui-<version>-darwin-x86_64.zip` |
+| Linux (x86_64) | `openspec-ui-<version>-linux-x86_64.zip` |
+| Windows (x86_64) | `openspec-ui-<version>-windows-x86_64.zip` |
 
 ```bash
 # Extract and run (Linux/macOS)
@@ -118,11 +128,20 @@ Create `openspec-ui.json`:
 ## Features
 
 - **Kanban Board** — Ideas, Todo, In Progress, Done, Archived columns
+- **Artifact chain** — per change: written / ready to write / blocked, with what it is waiting for
 - **Specs Browser** — Browse specifications across all repositories
 - **Detail View** — View proposals, specs, tasks, and design documents
 - **Real-time Updates** — Auto-refreshes when files change (SSE)
 - **Mobile-first** — Works great on phone and tablet
 - **Light/Dark Theme** — Toggle between themes
+
+## OpenSpec compatibility
+
+Tested against **OpenSpec 1.6**, and still reads the pre-1.0 layout.
+
+A change is recognised either by its `.openspec.yaml` marker (written by `openspec new change` from 1.0 onward) or by a `proposal.md` (older layout). This matters: OpenSpec creates the marker first and the proposal only once your agent drafts it, so a change that exists but has no proposal yet is still a change — and shows on the board as `proposal: ready` instead of being invisible.
+
+Artifact states follow the `spec-driven` schema — proposal gates design and specs, which together gate tasks — and are computed from the files on disk, so the values match `openspec status --change <name>` without shelling out to the CLI.
 
 ## Tech Stack
 

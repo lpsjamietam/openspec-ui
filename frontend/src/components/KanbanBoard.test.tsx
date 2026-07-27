@@ -15,7 +15,13 @@ describe('KanbanBoard', () => {
       hasSpecs: true,
       hasTasks: true,
       hasDesign: false,
-      readyForReview: false,
+      schema: 'spec-driven',
+      artifacts: [
+        { id: 'proposal', state: 'complete', missingDeps: [] },
+        { id: 'design', state: 'ready', missingDeps: [] },
+        { id: 'specs', state: 'complete', missingDeps: [] },
+        { id: 'tasks', state: 'complete', missingDeps: [] },
+      ],
     },
   ];
 
