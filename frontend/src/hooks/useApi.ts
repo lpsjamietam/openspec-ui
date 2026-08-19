@@ -250,6 +250,7 @@ export interface SourceConfig {
 
 export interface ConfigResponse {
   sources: SourceConfig[];
+  specsSourceId?: string | null;
   port: number;
   readOnly: boolean;
   bindAddress: string;

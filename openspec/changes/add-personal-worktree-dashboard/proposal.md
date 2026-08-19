@@ -9,6 +9,7 @@ Developers who use many Git worktrees need OpenSpec visibility without exposing 
 - Prefer artifact state reported by the installed OpenSpec CLI, with a transparent filesystem fallback.
 - Detect Git branch, commit, detached-worktree state, configured delivery track, and target branch for each source.
 - Collapse identical copies of a change across worktrees while preserving the list of contributing sources.
+- Allow one configured source to own the Specs browser while Changes remain aggregated across worktrees.
 
 ## Impact
 - Affected specs: `api`, `config`, `ui`

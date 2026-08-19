@@ -57,6 +57,7 @@ pub struct ConfigManager {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigResponse {
     pub sources: Vec<SourceConfig>,
+    pub specs_source_id: Option<String>,
     pub port: u16,
     pub read_only: bool,
     pub bind_address: String,
@@ -81,6 +82,7 @@ impl ConfigManager {
         let config = self.load_config()?;
         Ok(ConfigResponse {
             sources: config.sources,
+            specs_source_id: config.specs_source_id,
             port: config.port,
             read_only: config.read_only,
             bind_address: config.bind_address,

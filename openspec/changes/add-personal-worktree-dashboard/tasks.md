@@ -19,3 +19,10 @@
 - [x] 4.1 Update `README.md` and `openspec-ui.example.json` with safe personal-worktree configuration and limitations.
 - [x] 4.2 Run strict OpenSpec validation, Rust format/clippy/tests, and frontend lint/tests/build.
 - [x] 4.3 Exercise the binary against a real OpenSpec 1.9 repository and verify loopback/read-only behavior.
+
+## 5. Canonical Specs source
+- [x] 5.1 Add optional `specsSourceId` configuration and expose it through the config API.
+- [x] 5.2 Restrict Specs list and detail endpoints to the configured source, preserving multi-source behavior when omitted.
+- [x] 5.3 Cover configured and backward-compatible behavior with Rust tests.
+- [x] 5.4 Document per-machine filesystem configuration and fresh-clone limitations.
+- [x] 5.5 Run strict OpenSpec validation, Rust checks, frontend checks, rebuild the graph, and verify the running dashboard against `demo/main`.

@@ -13,6 +13,7 @@
       "targetBranch": "demo/main"
     }
   ],
+  "specsSourceId": "my-project-demo",
   "port": 3000,
   "bindAddress": "127.0.0.1",
   "readOnly": true,

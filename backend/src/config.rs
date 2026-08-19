@@ -26,6 +26,8 @@ pub struct SourceConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub sources: Vec<SourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specs_source_id: Option<String>,
     #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default = "default_read_only")]
@@ -166,13 +168,14 @@ mod tests {
         assert!(config.deduplicate_changes);
         assert_eq!(config.status_provider, StatusProvider::Auto);
         assert_eq!(config.openspec_command, "openspec");
+        assert_eq!(config.specs_source_id, None);
         assert_eq!(config.sources[0].track, None);
     }
 
     #[test]
     fn explicit_safety_overrides_are_preserved() {
         let config: Config = serde_json::from_str(
-            r#"{"sources":[],"readOnly":false,"bindAddress":"0.0.0.0","deduplicateChanges":false,"statusProvider":"filesystem","openspecCommand":"openspec-dev"}"#,
+            r#"{"sources":[],"specsSourceId":"demo-base","readOnly":false,"bindAddress":"0.0.0.0","deduplicateChanges":false,"statusProvider":"filesystem","openspecCommand":"openspec-dev"}"#,
         )
         .unwrap();
 
@@ -181,6 +184,7 @@ mod tests {
         assert!(!config.deduplicate_changes);
         assert_eq!(config.status_provider, StatusProvider::Filesystem);
         assert_eq!(config.openspec_command, "openspec-dev");
+        assert_eq!(config.specs_source_id.as_deref(), Some("demo-base"));
     }
 
     #[test]
