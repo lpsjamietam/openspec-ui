@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogClose,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
@@ -20,9 +21,10 @@ interface IdeaDetailModalProps {
   onClose: () => void;
   onDeleted?: () => void;
   onEdit?: (idea: Idea) => void;
+  readOnly?: boolean;
 }
 
-export function IdeaDetailModal({ idea, onClose, onDeleted, onEdit }: IdeaDetailModalProps) {
+export function IdeaDetailModal({ idea, onClose, onDeleted, onEdit, readOnly = true }: IdeaDetailModalProps) {
   const [deleting, setDeleting] = useState(false);
   const isMobile = useIsMobile();
 
@@ -77,6 +79,9 @@ export function IdeaDetailModal({ idea, onClose, onDeleted, onEdit }: IdeaDetail
               )}>
                 {idea.title}
               </DialogTitle>
+              <DialogDescription className="sr-only">
+                Idea details for {idea.title}
+              </DialogDescription>
               <div className="flex items-center gap-2 mt-2 flex-wrap">
                 <Badge 
                   variant="secondary" 
@@ -141,7 +146,7 @@ export function IdeaDetailModal({ idea, onClose, onDeleted, onEdit }: IdeaDetail
         </div>
 
         {/* Footer */}
-        <div className={cn(
+        {!readOnly && <div className={cn(
           "flex-shrink-0 border-t border-border bg-background/50",
           isMobile ? "p-4" : "px-6 py-4"
         )}>
@@ -175,7 +180,7 @@ export function IdeaDetailModal({ idea, onClose, onDeleted, onEdit }: IdeaDetail
               Edit
             </Button>
           </div>
-        </div>
+        </div>}
       </DialogContent>
     </Dialog>
   );

@@ -111,7 +111,7 @@ export function KanbanBoard({
   // Filter changes by selected source and archived status
   const filteredChanges = useMemo(() => {
     let result = selectedSourceId
-      ? changes.filter((c) => c.sourceId === selectedSourceId)
+      ? changes.filter((c) => c.sourceId === selectedSourceId || c.duplicateSources?.includes(selectedSourceId))
       : changes;
 
     // Filter out archived changes when showArchived is false
@@ -127,7 +127,11 @@ export function KanbanBoard({
       const query = searchQuery.toLowerCase();
       result = result.filter((c) =>
         c.name.toLowerCase().includes(query) ||
-        c.sourceId.toLowerCase().includes(query)
+        c.sourceId.toLowerCase().includes(query) ||
+        c.git?.branch?.toLowerCase().includes(query) ||
+        c.track?.toLowerCase().includes(query) ||
+        c.targetBranch?.toLowerCase().includes(query) ||
+        c.duplicateSources?.some((source) => source.toLowerCase().includes(query))
       );
     }
 

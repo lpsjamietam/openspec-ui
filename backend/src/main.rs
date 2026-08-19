@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use clap::Parser as ClapParser;
-use config::SourceConfig;
+use config::{GitContext, SourceConfig, StatusProvider};
 use config_manager::{AppState, ConfigManager, ConfigResponse};
 use futures::stream::{self, Stream};
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     convert::Infallible,
     env,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -52,11 +52,15 @@ struct Args {
 // === Response Types ===
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceResponse {
     id: String,
     name: String,
     path: String,
     valid: bool,
+    track: Option<String>,
+    target_branch: Option<String>,
+    git: Option<GitContext>,
 }
 
 #[derive(Serialize)]
@@ -119,6 +123,9 @@ async fn get_sources(State(state): State<AppState>) -> Json<SourcesResponse> {
             name: s.name.clone(),
             path: s.path.display().to_string(),
             valid: s.valid,
+            track: s.track.clone(),
+            target_branch: s.target_branch.clone(),
+            git: s.git.clone(),
         })
         .collect();
     Json(SourcesResponse { sources: response })
@@ -127,13 +134,53 @@ async fn get_sources(State(state): State<AppState>) -> Json<SourcesResponse> {
 async fn get_changes(State(state): State<AppState>) -> Json<ChangesResponse> {
     let mut all_changes = Vec::new();
     let sources = state.get_sources().await;
+    let config = state.config_manager.load_config().ok();
 
     for source in sources.iter().filter(|s| s.valid) {
-        let changes = parser::scan_changes(&source.path, &source.id);
+        let mut changes = parser::scan_changes(&source.path, &source.id);
+        parser::attach_source_context(&mut changes, source);
         all_changes.extend(changes);
     }
 
-    Json(ChangesResponse { changes: all_changes })
+    if config
+        .as_ref()
+        .is_none_or(|config| config.deduplicate_changes)
+    {
+        all_changes = parser::deduplicate_changes(all_changes);
+    }
+
+    if let Some(config) = config.filter(|config| config.status_provider == StatusProvider::Auto) {
+        for change in &mut all_changes {
+            let Some(source) = sources.iter().find(|source| source.id == change.source_id) else {
+                continue;
+            };
+            if let Err(error) =
+                parser::enrich_change_from_cli(change, &source.path, &config.openspec_command)
+            {
+                tracing::debug!(
+                    change = %change.name,
+                    source = %change.source_id,
+                    "OpenSpec CLI status unavailable; using filesystem status: {error}"
+                );
+            }
+        }
+    }
+
+    Json(ChangesResponse {
+        changes: all_changes,
+    })
+}
+
+fn require_writable(state: &AppState) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if state.config_manager.is_read_only().unwrap_or(true) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "OpenSpec UI is running in read-only mode".to_string(),
+            }),
+        ));
+    }
+    Ok(())
 }
 
 async fn get_change_detail(
@@ -223,6 +270,7 @@ async fn create_idea(
     State(state): State<AppState>,
     Json(req): Json<CreateIdeaRequest>,
 ) -> Result<Json<Idea>, (StatusCode, Json<ErrorResponse>)> {
+    require_writable(&state)?;
     // Find target source
     let sources = state.get_sources().await;
     let source = if let Some(source_id) = &req.source_id {
@@ -273,6 +321,7 @@ async fn delete_idea(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    require_writable(&state)?;
     let parts: Vec<&str> = id.splitn(2, '/').collect();
     if parts.len() != 2 {
         return Err((
@@ -315,6 +364,7 @@ async fn update_idea(
     Path(id): Path<String>,
     Json(req): Json<UpdateIdeaRequest>,
 ) -> Result<Json<Idea>, (StatusCode, Json<ErrorResponse>)> {
+    require_writable(&state)?;
     let parts: Vec<&str> = id.splitn(2, '/').collect();
     if parts.len() != 2 {
         return Err((
@@ -364,6 +414,7 @@ async fn update_sources(
     State(state): State<AppState>,
     Json(req): Json<UpdateSourcesRequest>,
 ) -> Result<Json<ConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
+    require_writable(&state)?;
     let config_manager = state.config_manager().await;
 
     // Validate sources - invalid ones are filtered out with warnings
@@ -609,11 +660,18 @@ async fn main() {
     // ... rest of main ...
     // Determine port
     // ...
-    let config_response = config_manager.get_config_response().unwrap_or(ConfigResponse {
-        sources: vec![],
-        port: 3000,
-    });
-    
+    let config_response = config_manager
+        .get_config_response()
+        .unwrap_or(ConfigResponse {
+            sources: vec![],
+            port: 3000,
+            read_only: true,
+            bind_address: "127.0.0.1".to_string(),
+            deduplicate_changes: true,
+            status_provider: StatusProvider::Auto,
+            openspec_command: "openspec".to_string(),
+        });
+
     let port = env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -687,9 +745,64 @@ async fn main() {
         app = app.fallback(static_handler);
     }
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("Starting server on http://localhost:{}", port);
+    let bind_address = env::var("BIND_ADDRESS").unwrap_or(config_response.bind_address);
+    let ip_address: IpAddr = bind_address.parse().unwrap_or_else(|error| {
+        tracing::error!("Invalid bind address '{bind_address}': {error}");
+        std::process::exit(1);
+    });
+    let addr = SocketAddr::new(ip_address, port);
+    tracing::info!(
+        "Starting server on http://{}:{} (read-only: {})",
+        ip_address,
+        port,
+        config_response.read_only
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_state(read_only: bool) -> (AppState, PathBuf) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let config_path = std::env::temp_dir().join(format!("openspec-ui-config-{suffix}.json"));
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"sources":[],"readOnly":{},"bindAddress":"127.0.0.1"}}"#,
+                read_only
+            ),
+        )
+        .unwrap();
+        let manager = Arc::new(ConfigManager::new(config_path.clone()));
+        let (update_tx, _) = broadcast::channel(1);
+        let (config_update_tx, _) = broadcast::channel(1);
+        (
+            AppState::new(vec![], manager, update_tx, config_update_tx),
+            config_path,
+        )
+    }
+
+    #[test]
+    fn read_only_mode_rejects_mutations() {
+        let (state, config_path) = test_state(true);
+        let (status, response) = require_writable(&state).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(response.0.error, "OpenSpec UI is running in read-only mode");
+        std::fs::remove_file(config_path).ok();
+    }
+
+    #[test]
+    fn writable_mode_allows_mutations() {
+        let (state, config_path) = test_state(false);
+        assert!(require_writable(&state).is_ok());
+        std::fs::remove_file(config_path).ok();
+    }
 }

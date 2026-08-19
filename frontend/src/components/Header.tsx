@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTheme } from '../hooks/useTheme';
-import { Menu, Settings, Sun, Moon, Sparkles, Lightbulb } from 'lucide-react';
+import { Menu, Settings, Sun, Moon, Sparkles, Lightbulb, LockKeyhole } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -32,6 +32,7 @@ interface HeaderProps {
   onShowArchivedChange?: (show: boolean) => void;
   onOpenSettings?: () => void;
   onOpenNewIdea?: () => void;
+  readOnly?: boolean;
 }
 
 export function Header({
@@ -45,6 +46,7 @@ export function Header({
   onShowArchivedChange,
   onOpenSettings,
   onOpenNewIdea,
+  readOnly = true,
 }: HeaderProps) {
   const { theme, toggle } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -235,6 +237,7 @@ export function Header({
   };
 
   const NewIdeaButton = ({ mobile = false }: { mobile?: boolean }) => {
+    if (readOnly) return null;
     if (mobile) {
       return (
         <button
@@ -327,6 +330,12 @@ export function Header({
 
           {/* Right: Controls */}
           <div className="flex items-center gap-2 md:gap-3 flex-shrink-0">
+            {readOnly && (
+              <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/50 px-2.5 py-1 text-[11px] font-medium text-muted-foreground" title="All repository and configuration mutations are disabled">
+                <LockKeyhole className="h-3 w-3" />
+                Read only
+              </div>
+            )}
             {/* Show Archived toggle - visible on desktop when in kanban view */}
             <div className="hidden md:block">
               <ShowArchivedToggle />

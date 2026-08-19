@@ -1,6 +1,7 @@
+use crate::config::{GitContext, Source};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{collections::HashMap, path::Path, process::Command};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,9 +29,18 @@ pub enum ArtifactState {
     Complete,
     Ready,
     Blocked,
+    Skipped,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusSource {
+    Filesystem,
+    FilesystemFallback,
+    Cli,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
     pub id: String,
@@ -55,6 +65,16 @@ pub struct Change {
     pub schema: Option<String>,
     /// Per-artifact progress through the change's workflow
     pub artifacts: Vec<Artifact>,
+    pub status_source: StatusSource,
+    pub git: Option<GitContext>,
+    pub track: Option<String>,
+    pub target_branch: Option<String>,
+    pub duplicate_count: usize,
+    pub duplicate_sources: Vec<String>,
+    #[serde(skip)]
+    pub fingerprint: String,
+    #[serde(skip)]
+    pub is_archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -278,6 +298,37 @@ fn compute_status(has_tasks: bool, task_stats: &Option<TaskStats>, is_archived: 
     }
 }
 
+fn update_hash(hash: &mut u64, bytes: &[u8]) {
+    const FNV_PRIME: u64 = 0x100000001b3;
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+fn change_fingerprint(change_path: &Path, name: &str) -> String {
+    let mut files = WalkDir::new(change_path)
+        .min_depth(1)
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect::<Vec<_>>();
+    files.sort();
+
+    let mut hash = 0xcbf29ce484222325;
+    update_hash(&mut hash, name.as_bytes());
+    for path in files {
+        if let Ok(relative) = path.strip_prefix(change_path) {
+            update_hash(&mut hash, relative.to_string_lossy().as_bytes());
+        }
+        if let Ok(content) = std::fs::read(&path) {
+            update_hash(&mut hash, &content);
+        }
+    }
+    format!("{hash:016x}")
+}
+
 /// Scan a single change directory and return Change
 fn scan_change(change_path: &Path, source_id: &str, is_archived: bool) -> Option<Change> {
     let name = change_path.file_name()?.to_str()?;
@@ -328,6 +379,14 @@ fn scan_change(change_path: &Path, source_id: &str, is_archived: bool) -> Option
         task_stats,
         schema,
         artifacts: compute_artifacts(has_proposal, has_design, has_specs, has_tasks),
+        status_source: StatusSource::Filesystem,
+        git: None,
+        track: None,
+        target_branch: None,
+        duplicate_count: 1,
+        duplicate_sources: vec![source_id.to_string()],
+        fingerprint: change_fingerprint(change_path, name),
+        is_archived,
     })
 }
 
@@ -367,6 +426,119 @@ pub fn scan_changes(source_path: &Path, source_id: &str) -> Vec<Change> {
     }
 
     changes
+}
+
+pub fn attach_source_context(changes: &mut [Change], source: &Source) {
+    for change in changes {
+        change.git = source.git.clone();
+        change.track = source.track.clone();
+        change.target_branch = source.target_branch.clone();
+    }
+}
+
+pub fn deduplicate_changes(changes: Vec<Change>) -> Vec<Change> {
+    let mut grouped = Vec::<Change>::new();
+    let mut indexes = HashMap::<(String, String, bool), usize>::new();
+
+    for change in changes {
+        let key = (
+            change.name.clone(),
+            change.fingerprint.clone(),
+            change.is_archived,
+        );
+        if let Some(index) = indexes.get(&key).copied() {
+            let representative = &mut grouped[index];
+            if !representative.duplicate_sources.contains(&change.source_id) {
+                representative.duplicate_sources.push(change.source_id);
+                representative.duplicate_count = representative.duplicate_sources.len();
+            }
+        } else {
+            indexes.insert(key, grouped.len());
+            grouped.push(change);
+        }
+    }
+
+    grouped
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliStatus {
+    schema_name: String,
+    artifacts: Vec<CliArtifact>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliArtifact {
+    id: String,
+    status: String,
+    #[serde(default)]
+    requires: Vec<String>,
+}
+
+fn apply_cli_status(change: &mut Change, status: CliStatus) {
+    let completed = status
+        .artifacts
+        .iter()
+        .filter(|artifact| matches!(artifact.status.as_str(), "done" | "skipped"))
+        .map(|artifact| artifact.id.clone())
+        .collect::<Vec<_>>();
+
+    change.artifacts = status
+        .artifacts
+        .into_iter()
+        .map(|artifact| {
+            let state = match artifact.status.as_str() {
+                "done" => ArtifactState::Complete,
+                "ready" => ArtifactState::Ready,
+                "skipped" => ArtifactState::Skipped,
+                _ => ArtifactState::Blocked,
+            };
+            let missing_deps = if state == ArtifactState::Blocked {
+                artifact
+                    .requires
+                    .into_iter()
+                    .filter(|required| !completed.contains(required))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Artifact {
+                id: artifact.id,
+                state,
+                missing_deps,
+            }
+        })
+        .collect();
+    change.schema = Some(status.schema_name);
+    change.status_source = StatusSource::Cli;
+}
+
+pub fn enrich_change_from_cli(
+    change: &mut Change,
+    source_path: &Path,
+    openspec_command: &str,
+) -> Result<(), String> {
+    if change.is_archived {
+        return Ok(());
+    }
+
+    change.status_source = StatusSource::FilesystemFallback;
+
+    let working_directory = source_path.parent().unwrap_or(source_path);
+    let output = Command::new(openspec_command)
+        .args(["status", "--change", &change.name, "--json"])
+        .current_dir(working_directory)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let status: CliStatus = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("invalid OpenSpec status JSON: {error}"))?;
+    apply_cli_status(change, status);
+    Ok(())
 }
 
 /// Get full details for a specific change
@@ -772,6 +944,109 @@ Description"#;
         assert_eq!(found.status, ChangeStatus::Draft);
         assert!(!found.has_proposal);
         assert_eq!(found.schema.as_deref(), Some("spec-driven"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn identical_worktree_changes_are_grouped() {
+        let dir = std::env::temp_dir().join(format!("ospec-ui-dedupe-{}", std::process::id()));
+        let first = dir.join("one").join("same-change");
+        let second = dir.join("two").join("same-change");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("proposal.md"), "# Same proposal\n").unwrap();
+        std::fs::write(second.join("proposal.md"), "# Same proposal\n").unwrap();
+
+        let grouped = deduplicate_changes(vec![
+            scan_change(&first, "worktree-one", false).unwrap(),
+            scan_change(&second, "worktree-two", false).unwrap(),
+        ]);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].source_id, "worktree-one");
+        assert_eq!(grouped[0].duplicate_count, 2);
+        assert_eq!(
+            grouped[0].duplicate_sources,
+            vec!["worktree-one", "worktree-two"]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn divergent_worktree_changes_remain_separate() {
+        let dir = std::env::temp_dir().join(format!("ospec-ui-divergent-{}", std::process::id()));
+        let first = dir.join("one").join("same-change");
+        let second = dir.join("two").join("same-change");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("proposal.md"), "# First proposal\n").unwrap();
+        std::fs::write(second.join("proposal.md"), "# Diverged proposal\n").unwrap();
+
+        let grouped = deduplicate_changes(vec![
+            scan_change(&first, "worktree-one", false).unwrap(),
+            scan_change(&second, "worktree-two", false).unwrap(),
+        ]);
+
+        assert_eq!(grouped.len(), 2);
+        assert!(grouped.iter().all(|change| change.duplicate_count == 1));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cli_status_maps_ready_blocked_and_skipped_artifacts() {
+        let dir = std::env::temp_dir().join(format!("ospec-ui-cli-{}", std::process::id()));
+        let change_path = dir.join("cli-change");
+        std::fs::create_dir_all(&change_path).unwrap();
+        std::fs::write(change_path.join("proposal.md"), "# Proposal\n").unwrap();
+        let mut change = scan_change(&change_path, "repo", false).unwrap();
+        let status: CliStatus = serde_json::from_str(
+            r#"{
+                "schemaName": "spec-driven",
+                "artifacts": [
+                    {"id":"proposal","status":"done","requires":[]},
+                    {"id":"design","status":"skipped","requires":["proposal"]},
+                    {"id":"specs","status":"ready","requires":["proposal"]},
+                    {"id":"tasks","status":"blocked","requires":["specs"]}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        apply_cli_status(&mut change, status);
+
+        assert_eq!(change.status_source, StatusSource::Cli);
+        assert_eq!(change.schema.as_deref(), Some("spec-driven"));
+        assert_eq!(change.artifacts[0].state, ArtifactState::Complete);
+        assert_eq!(change.artifacts[1].state, ArtifactState::Skipped);
+        assert_eq!(change.artifacts[2].state, ArtifactState::Ready);
+        assert_eq!(change.artifacts[3].state, ArtifactState::Blocked);
+        assert_eq!(change.artifacts[3].missing_deps, vec!["specs"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unavailable_cli_preserves_filesystem_status() {
+        let dir = std::env::temp_dir().join(format!("ospec-ui-fallback-{}", std::process::id()));
+        let source_path = dir.join("openspec");
+        let change_path = source_path.join("changes").join("fallback-change");
+        std::fs::create_dir_all(&change_path).unwrap();
+        std::fs::write(change_path.join("proposal.md"), "# Proposal\n").unwrap();
+        let mut change = scan_change(&change_path, "repo", false).unwrap();
+        let original_artifacts = change.artifacts.clone();
+
+        let result = enrich_change_from_cli(
+            &mut change,
+            &source_path,
+            "openspec-ui-command-that-does-not-exist",
+        );
+
+        assert!(result.is_err());
+        assert_eq!(change.status_source, StatusSource::FilesystemFallback);
+        assert_eq!(change.artifacts, original_artifacts);
 
         std::fs::remove_dir_all(&dir).ok();
     }

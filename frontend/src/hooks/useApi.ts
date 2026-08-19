@@ -244,11 +244,18 @@ export function useSSE(onUpdate: () => void): { connectionStatus: ConnectionStat
 export interface SourceConfig {
   name: string;
   path: string;
+  track?: string;
+  targetBranch?: string;
 }
 
 export interface ConfigResponse {
   sources: SourceConfig[];
   port: number;
+  readOnly: boolean;
+  bindAddress: string;
+  deduplicateChanges: boolean;
+  statusProvider: 'auto' | 'filesystem';
+  openspecCommand: string;
 }
 
 export interface ErrorResponse {
@@ -257,6 +264,30 @@ export interface ErrorResponse {
 
 export async function getConfig(): Promise<ConfigResponse> {
   return fetchJson<ConfigResponse>(`${API_BASE}/config`);
+}
+
+export function useConfig() {
+  const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const refetch = useCallback(async () => {
+    try {
+      setLoading(true);
+      setConfig(await getConfig());
+      setError(null);
+    } catch (e) {
+      setError(e as Error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  return { config, loading, error, refetch };
 }
 
 export async function updateSources(sources: SourceConfig[]): Promise<ConfigResponse> {

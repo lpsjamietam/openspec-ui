@@ -1,12 +1,12 @@
 # OpenSpec UI — a web dashboard for OpenSpec
 
 [![CI](https://github.com/ToruAI/openspec-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/ToruAI/openspec-ui/actions/workflows/ci.yml)
-[![OpenSpec 1.6](https://img.shields.io/badge/OpenSpec-1.6%20compatible-blue)](https://github.com/Fission-AI/OpenSpec)
+[![OpenSpec 1.9](https://img.shields.io/badge/OpenSpec-1.9%20compatible-blue)](https://github.com/Fission-AI/OpenSpec)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **A single kanban board over every [OpenSpec](https://github.com/Fission-AI/OpenSpec) repo you work in** — which change is where in the workflow, what is ready to write next, and what is still blocked. `openspec view` shows you one repo in the terminal; this shows all of them, in a browser, on your phone too.
 
-Read-only, runs locally, one binary. It never writes to your specs.
+Read-only by default, loopback-only, and one binary. Writable idea capture remains available as an explicit opt-in.
 
 <p align="center">
   <img src="./desktop.png" alt="OpenSpec UI Desktop" width="600"/>
@@ -37,9 +37,11 @@ OpenSpec UI reads this structure and displays it as a kanban board.
 
 OpenSpec UI gives you a bird's-eye view of all your AI-assisted projects:
 
-- **Artifact chain per change** — see `proposal → design → specs → tasks` with each one marked written, **ready to write next**, or blocked and waiting on another artifact. Same vocabulary as `openspec status`, read straight from disk.
+- **Artifact chain per change** — see each workflow artifact as complete, ready, blocked, or skipped. OpenSpec CLI status is preferred, with a visible filesystem fallback.
 - **Multi-repo visibility** — monitor every OpenSpec repository from one board
-- **Capture ideas** — quick-capture thoughts that AI agents can later expand into proposals
+- **Worktree context** — see the current Git branch/commit plus optional delivery track and target branch
+- **Duplicate grouping** — collapse identical copies of a change while keeping every contributing source visible
+- **Capture ideas (opt-in)** — enable writable mode when you want the UI to create or edit idea files
 - **Track progress** — watch changes move from Ideas → Todo → In Progress → Done
 - **Real-time updates** — auto-refreshes as your agents work through tasks
 
@@ -84,11 +86,14 @@ unzip openspec-ui-*.zip
 ```bash
 docker build -t openspec-ui .
 
-docker run -p 3000:3000 \
-  -v /path/to/your/repos:/repos \
-  -v /path/to/openspec-ui.json:/app/openspec-ui.json \
+docker run -p 127.0.0.1:3000:3000 \
+  -e BIND_ADDRESS=0.0.0.0 \
+  -v /path/to/your/repos:/repos:ro \
+  -v /path/to/openspec-ui.json:/app/openspec-ui.json:ro \
   openspec-ui
 ```
+
+The container must listen on `0.0.0.0` internally for Docker port forwarding; publishing the port to `127.0.0.1` keeps it local to your machine. Read-only mounts add a second safety boundary.
 
 ### Option 3: Build from Source
 
@@ -111,10 +116,25 @@ Create `openspec-ui.json`:
 ```json
 {
   "sources": [
-    { "name": "my-project", "path": "/path/to/my-project/openspec" },
-    { "name": "another-repo", "path": "/path/to/another-repo/openspec" }
+    {
+      "name": "my-project-main",
+      "path": "/path/to/my-project/openspec",
+      "track": "production",
+      "targetBranch": "main"
+    },
+    {
+      "name": "my-project-demo",
+      "path": "/path/to/my-project-worktree/openspec",
+      "track": "demo",
+      "targetBranch": "demo/main"
+    }
   ],
-  "port": 3000
+  "port": 3000,
+  "bindAddress": "127.0.0.1",
+  "readOnly": true,
+  "deduplicateChanges": true,
+  "statusProvider": "auto",
+  "openspecCommand": "openspec"
 }
 ```
 
@@ -123,7 +143,20 @@ Create `openspec-ui.json`:
 | `sources` | Array of OpenSpec directories to monitor |
 | `sources[].name` | Display name for the project |
 | `sources[].path` | Path to the `openspec/` directory |
+| `sources[].track` | Optional workflow label such as `demo` or `production` |
+| `sources[].targetBranch` | Optional intended merge target such as `demo/main` or `main` |
 | `port` | Server port (default: 3000) |
+| `bindAddress` | Listener address (default: `127.0.0.1`) |
+| `readOnly` | Reject all idea/config mutations and hide mutation controls (default: `true`) |
+| `deduplicateChanges` | Group changes with the same name and content across worktrees (default: `true`) |
+| `statusProvider` | `auto` tries the OpenSpec CLI, then falls back to files; `filesystem` never shells out (default: `auto`) |
+| `openspecCommand` | OpenSpec executable used by `auto` mode (default: `openspec`) |
+
+Git branch, short commit, detached-HEAD state, and worktree root are discovered automatically for each source. Deduplication only groups byte-identical change directories; divergent worktree copies remain separate. The representative card lists all grouped source IDs.
+
+### Writable mode
+
+Set `"readOnly": false` only when you intentionally want the dashboard to create, edit, or delete ideas and update its source list. OpenSpec changes and specs remain display-only; the writable endpoints are limited to the existing idea and source-configuration operations.
 
 ## Features
 
@@ -137,11 +170,11 @@ Create `openspec-ui.json`:
 
 ## OpenSpec compatibility
 
-Tested against **OpenSpec 1.6**, and still reads the pre-1.0 layout.
+Tested against **OpenSpec 1.9**, and still reads the pre-1.0 layout.
 
 A change is recognised either by its `.openspec.yaml` marker (written by `openspec new change` from 1.0 onward) or by a `proposal.md` (older layout). This matters: OpenSpec creates the marker first and the proposal only once your agent drafts it, so a change that exists but has no proposal yet is still a change — and shows on the board as `proposal: ready` instead of being invisible.
 
-Artifact states follow the `spec-driven` schema — proposal gates design and specs, which together gate tasks — and are computed from the files on disk, so the values match `openspec status --change <name>` without shelling out to the CLI.
+With `statusProvider: "auto"`, artifact states come from `openspec status --change <name> --json`, so custom schemas and skipped artifacts are represented correctly. If the CLI is missing or returns invalid data, the card is explicitly marked `filesystem fallback` and uses the built-in `spec-driven` inference. Set `statusProvider: "filesystem"` for environments where spawning the CLI is undesirable.
 
 ## Tech Stack
 
