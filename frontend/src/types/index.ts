@@ -3,6 +3,16 @@ export interface Source {
   name: string;
   path: string;
   valid: boolean;
+  track?: string | null;
+  targetBranch?: string | null;
+  git?: GitContext | null;
+}
+
+export interface GitContext {
+  worktreeRoot: string;
+  branch: string | null;
+  commit: string;
+  detached: boolean;
 }
 
 export interface TaskStats {
@@ -13,7 +23,7 @@ export interface TaskStats {
 export type ChangeStatus = 'draft' | 'todo' | 'in_progress' | 'done' | 'archived';
 
 /** Same vocabulary as `openspec status`. */
-export type ArtifactState = 'complete' | 'ready' | 'blocked';
+export type ArtifactState = 'complete' | 'ready' | 'blocked' | 'skipped';
 
 export interface Artifact {
   id: string;
@@ -35,6 +45,12 @@ export interface Change {
   /** Workflow schema from .openspec.yaml (OpenSpec >= 1.0) */
   schema: string | null;
   artifacts: Artifact[];
+  statusSource?: 'cli' | 'filesystem' | 'filesystem_fallback';
+  git?: GitContext | null;
+  track?: string | null;
+  targetBranch?: string | null;
+  duplicateCount?: number;
+  duplicateSources?: string[];
 }
 
 export interface SpecContent {

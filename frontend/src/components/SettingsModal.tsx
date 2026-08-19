@@ -8,16 +8,17 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, Trash2, AlertCircle, FolderOpen, Loader2, Check } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, FolderOpen, Loader2, Check, LockKeyhole } from 'lucide-react';
 import { getConfig, updateSources, type SourceConfig } from '../hooks/useApi';
 import { cn } from '@/lib/utils';
 
 interface SettingsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  readOnly?: boolean;
 }
 
-export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+export function SettingsModal({ open, onOpenChange, readOnly = true }: SettingsModalProps) {
   const [sources, setSources] = useState<SourceConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +27,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   // New source state
   const [newName, setNewName] = useState('');
   const [newPath, setNewPath] = useState('');
+  const [newTrack, setNewTrack] = useState('');
+  const [newTargetBranch, setNewTargetBranch] = useState('');
 
   // Load config when opened
   useEffect(() => {
@@ -60,7 +63,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
     const newSource: SourceConfig = {
       name: newName.trim(),
-      path: newPath.trim()
+      path: newPath.trim(),
+      ...(newTrack.trim() ? { track: newTrack.trim() } : {}),
+      ...(newTargetBranch.trim() ? { targetBranch: newTargetBranch.trim() } : {}),
     };
 
     // Optimistic update
@@ -68,6 +73,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     setSources(updatedSources);
     setNewName('');
     setNewPath('');
+    setNewTrack('');
+    setNewTargetBranch('');
 
     try {
       setLoading(true);
@@ -116,7 +123,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             <div>
               <h3 className="text-sm font-semibold leading-none">Sources</h3>
               <p className="text-sm text-muted-foreground mt-1.5">
-                Configure OpenSpec source repositories. Changes are applied immediately.
+                {readOnly
+                  ? 'OpenSpec sources configured for this dashboard.'
+                  : 'Configure OpenSpec source repositories. Changes are applied immediately.'}
               </p>
             </div>
 
@@ -154,16 +163,23 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                         <div className="text-xs text-muted-foreground font-mono truncate max-w-[300px] sm:max-w-[400px]">
                           {source.path}
                         </div>
+                        {(source.track || source.targetBranch) && (
+                          <div className="text-xs text-muted-foreground">
+                            {[source.track, source.targetBranch && `target: ${source.targetBranch}`].filter(Boolean).join(' · ')}
+                          </div>
+                        )}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleRemoveSource(i)}
-                        disabled={loading}
-                        className="text-destructive hover:text-destructive hover:bg-destructive/10 h-8 w-8 rounded-lg shrink-0"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      {!readOnly && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveSource(i)}
+                          disabled={loading}
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10 h-8 w-8 rounded-lg shrink-0"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -182,8 +198,15 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
               )}
             </div>
 
+            {readOnly && (
+              <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/40 p-3 text-sm text-muted-foreground">
+                <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>Read-only mode is active. Edit the JSON configuration to change sources.</span>
+              </div>
+            )}
+
             {/* Add new source form */}
-            <div className="grid gap-4 p-4 border border-border/50 rounded-xl bg-muted/30">
+            {!readOnly && <div className="grid gap-4 p-4 border border-border/50 rounded-xl bg-muted/30">
               <div className="text-sm font-medium flex items-center gap-2">
                 <Plus className="h-4 w-4 text-primary" />
                 Add New Source
@@ -211,6 +234,28 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                     className="h-9 bg-background/50 font-mono text-sm"
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="track" className="text-xs">Track (optional)</Label>
+                  <Input
+                    id="track"
+                    placeholder="demo or production"
+                    value={newTrack}
+                    onChange={(e) => setNewTrack(e.target.value)}
+                    disabled={loading}
+                    className="h-9 bg-background/50"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="targetBranch" className="text-xs">Target branch (optional)</Label>
+                  <Input
+                    id="targetBranch"
+                    placeholder="demo/main or main"
+                    value={newTargetBranch}
+                    onChange={(e) => setNewTargetBranch(e.target.value)}
+                    disabled={loading}
+                    className="h-9 bg-background/50 font-mono text-sm"
+                  />
+                </div>
               </div>
               <Button 
                 onClick={handleAddSource} 
@@ -232,7 +277,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   </>
                 )}
               </Button>
-            </div>
+            </div>}
           </div>
         </div>
       </DialogContent>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { X, FileText, Layers, CheckSquare, Palette, Loader2 } from 'lucide-react';
+import { X, FileText, Layers, CheckSquare, Palette, Loader2, GitBranch, Copy, TriangleAlert } from 'lucide-react';
 import { useChange } from '../hooks/useApi';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import type { Change } from '../types';
@@ -137,6 +137,32 @@ export function DetailModal({ change, onClose }: DetailModalProps) {
                 {change.taskStats && change.taskStats.total > 0 && (
                   <Badge variant="outline" className="text-xs font-medium">
                     {change.taskStats.done}/{change.taskStats.total} tasks
+                  </Badge>
+                )}
+                {change.git && (
+                  <Badge variant="outline" className="gap-1 font-mono text-xs">
+                    <GitBranch className="h-3 w-3" />
+                    {change.git.detached ? `detached @ ${change.git.commit}` : change.git.branch}
+                  </Badge>
+                )}
+                {change.track && <Badge variant="outline" className="text-xs">{change.track}</Badge>}
+                {change.targetBranch && <Badge variant="outline" className="font-mono text-xs">→ {change.targetBranch}</Badge>}
+                {(change.duplicateCount ?? 1) > 1 && (
+                  <Badge variant="outline" className="gap-1 text-xs" title={change.duplicateSources?.join(', ')}>
+                    <Copy className="h-3 w-3" />
+                    {change.duplicateCount} copies
+                  </Badge>
+                )}
+                {change.statusSource?.startsWith('filesystem') && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "gap-1 text-xs",
+                      change.statusSource === 'filesystem_fallback' && "border-amber-500/30 text-amber-600 dark:text-amber-400"
+                    )}
+                  >
+                    <TriangleAlert className="h-3 w-3" />
+                    {change.statusSource === 'filesystem_fallback' ? 'filesystem fallback' : 'filesystem status'}
                   </Badge>
                 )}
               </div>

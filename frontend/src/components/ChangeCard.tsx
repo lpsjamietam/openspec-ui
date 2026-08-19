@@ -1,7 +1,7 @@
 import type { Change, Artifact } from '../types';
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Layers, CheckSquare, Palette } from 'lucide-react';
+import { FileText, Layers, CheckSquare, Palette, GitBranch, Copy, TriangleAlert } from 'lucide-react';
 import { cn } from "@/lib/utils";
 
 interface ChangeCardProps {
@@ -39,6 +39,7 @@ function artifactStates(change: Change): Record<string, Artifact> {
 
 function artifactTitle(artifact: Artifact): string {
   if (artifact.state === 'complete') return 'Written';
+  if (artifact.state === 'skipped') return 'Skipped by the OpenSpec workflow';
   if (artifact.state === 'ready') return 'Ready to write — nothing blocking it';
   return artifact.missingDeps.length > 0
     ? `Waiting for ${artifact.missingDeps.join(' and ')}`
@@ -50,6 +51,9 @@ export function ChangeCard({ change, onClick }: ChangeCardProps) {
   const progress = taskStats && taskStats.total > 0 ? (taskStats.done / taskStats.total) * 100 : 0;
   const isComplete = progress === 100;
   const states = artifactStates(change);
+  const branchLabel = change.git?.detached
+    ? `detached @ ${change.git.commit}`
+    : change.git?.branch;
 
   return (
     <Card
@@ -73,6 +77,46 @@ export function ChangeCard({ change, onClick }: ChangeCardProps) {
             {change.sourceId}
           </Badge>
         </div>
+
+        {(branchLabel || change.track || change.targetBranch) && (
+          <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+            {branchLabel && (
+              <span className="flex min-w-0 items-center gap-1 font-mono" title={change.git?.worktreeRoot}>
+                <GitBranch className="h-3 w-3 shrink-0" />
+                <span className="truncate">{branchLabel}</span>
+              </span>
+            )}
+            {change.track && <span className="rounded bg-muted px-1.5 py-0.5 font-medium">{change.track}</span>}
+            {change.targetBranch && <span className="font-mono">→ {change.targetBranch}</span>}
+          </div>
+        )}
+
+        {((change.duplicateCount ?? 1) > 1 || change.statusSource?.startsWith('filesystem')) && (
+          <div className="mb-3 flex flex-wrap gap-2 text-[10px]">
+            {(change.duplicateCount ?? 1) > 1 && (
+              <span className="flex items-center gap-1 text-muted-foreground" title={change.duplicateSources?.join(', ')}>
+                <Copy className="h-3 w-3" />
+                {change.duplicateCount} worktree copies grouped
+              </span>
+            )}
+            {change.statusSource?.startsWith('filesystem') && (
+              <span
+                className={cn(
+                  "flex items-center gap-1",
+                  change.statusSource === 'filesystem_fallback'
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-muted-foreground"
+                )}
+                title={change.statusSource === 'filesystem_fallback'
+                  ? 'OpenSpec CLI status was unavailable; artifact state was inferred from files'
+                  : 'Artifact state was read from files'}
+              >
+                <TriangleAlert className="h-3 w-3" />
+                {change.statusSource === 'filesystem_fallback' ? 'filesystem fallback' : 'filesystem status'}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Progress bar */}
         {taskStats && taskStats.total > 0 && (
@@ -109,6 +153,7 @@ export function ChangeCard({ change, onClick }: ChangeCardProps) {
             if (!artifact) return null;
             const isWritten = artifact.state === 'complete';
             const isReady = artifact.state === 'ready';
+            const isSkipped = artifact.state === 'skipped';
 
             return (
               <div
@@ -118,6 +163,8 @@ export function ChangeCard({ change, onClick }: ChangeCardProps) {
                   "flex items-center gap-1.5 px-2 py-1 rounded-md transition-opacity",
                   isWritten
                     ? tone
+                    : isSkipped
+                      ? "border border-dashed border-border/70 bg-muted/30 text-muted-foreground/60"
                     : isReady
                       ? "bg-foreground/5 text-foreground/70 ring-1 ring-inset ring-foreground/15"
                       : "bg-muted/50 text-muted-foreground/50"

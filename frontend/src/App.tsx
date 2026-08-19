@@ -7,7 +7,7 @@ import { IdeaDetailModal } from './components/IdeaDetailModal';
 import { SettingsModal } from './components/SettingsModal';
 import { IdeaCapture } from './components/IdeaCapture';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { useSSE, useChanges, useSpecs, useSources, useIdeas } from './hooks/useApi';
+import { useSSE, useChanges, useSpecs, useSources, useIdeas, useConfig } from './hooks/useApi';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import type { Change, Idea } from './types';
 import './App.css';
@@ -61,6 +61,8 @@ function App() {
   const { changes, loading: changesLoading, error: changesError, refetch: refetchChanges } = useChanges();
   const { refetch: refetchSpecs } = useSpecs();
   const { ideas, loading: ideasLoading, error: ideasError, refetch: refetchIdeas } = useIdeas();
+  const { config, refetch: refetchConfig } = useConfig();
+  const readOnly = config?.readOnly ?? true;
 
   // Connect to SSE for real-time updates
   const handleUpdate = useCallback(() => {
@@ -68,7 +70,8 @@ function App() {
     refetchSpecs();
     refetchSources();
     refetchIdeas();
-  }, [refetchChanges, refetchSpecs, refetchSources, refetchIdeas]);
+    refetchConfig();
+  }, [refetchChanges, refetchSpecs, refetchSources, refetchIdeas, refetchConfig]);
 
   useSSE(handleUpdate);
 
@@ -97,6 +100,7 @@ function App() {
           onShowArchivedChange={setShowArchived}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenNewIdea={() => setIdeaCaptureOpen(true)}
+          readOnly={readOnly}
         />
         <main className={currentView === 'kanban' ? "px-4 pt-4 md:pt-6" : "max-w-7xl mx-auto px-4 pt-4 md:pt-6"}>
           {currentView === 'kanban' ? (
@@ -131,13 +135,15 @@ function App() {
               setEditingIdea(idea);
               setIdeaCaptureOpen(true);
             }}
+            readOnly={readOnly}
           />
         )}
         <SettingsModal
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
+          readOnly={readOnly}
         />
-        <IdeaCapture
+        {!readOnly && <IdeaCapture
           open={ideaCaptureOpen}
           onOpenChange={(open) => {
             setIdeaCaptureOpen(open);
@@ -150,14 +156,13 @@ function App() {
             refetchIdeas();
             setEditingIdea(null);
           }}
-        />
+        />}
       </div>
     </ErrorBoundary>
   );
 }
 
 export default App;
-
 
 
 

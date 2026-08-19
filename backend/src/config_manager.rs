@@ -1,4 +1,4 @@
-use crate::config::{Config, Source, SourceConfig};
+use crate::config::{Config, Source, SourceConfig, StatusProvider};
 use serde::Serialize;
 use std::{
     path::PathBuf,
@@ -54,9 +54,15 @@ pub struct ConfigManager {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigResponse {
     pub sources: Vec<SourceConfig>,
     pub port: u16,
+    pub read_only: bool,
+    pub bind_address: String,
+    pub deduplicate_changes: bool,
+    pub status_provider: StatusProvider,
+    pub openspec_command: String,
 }
 
 impl ConfigManager {
@@ -65,18 +71,31 @@ impl ConfigManager {
     }
 
     pub fn load_sources(&self) -> Result<Vec<Source>, anyhow::Error> {
-        let config = Config::load(&self.config_path)?;
+        let config = self.load_config()?;
         let default_path = PathBuf::from(".");
         let base_path = self.config_path.parent().unwrap_or(&default_path);
         Ok(config.resolve_sources(base_path))
     }
 
     pub fn get_config_response(&self) -> Result<ConfigResponse, anyhow::Error> {
-        let config = Config::load(&self.config_path)?;
+        let config = self.load_config()?;
         Ok(ConfigResponse {
             sources: config.sources,
             port: config.port,
+            read_only: config.read_only,
+            bind_address: config.bind_address,
+            deduplicate_changes: config.deduplicate_changes,
+            status_provider: config.status_provider,
+            openspec_command: config.openspec_command,
         })
+    }
+
+    pub fn load_config(&self) -> Result<Config, anyhow::Error> {
+        Ok(Config::load(&self.config_path)?)
+    }
+
+    pub fn is_read_only(&self) -> Result<bool, anyhow::Error> {
+        Ok(self.load_config()?.read_only)
     }
 
     /// Validates sources and returns (valid_sources, warnings).
@@ -119,4 +138,3 @@ impl ConfigManager {
         Ok(())
     }
 }
-
