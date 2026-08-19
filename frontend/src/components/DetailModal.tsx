@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { X, FileText, Layers, CheckSquare, Palette, Loader2, GitBranch, Copy, TriangleAlert } from 'lucide-react';
+import { X, FileText, Layers, CheckSquare, Palette, Loader2, GitBranch, Copy, TriangleAlert, GitPullRequest, ExternalLink, Archive } from 'lucide-react';
 import { useChange } from '../hooks/useApi';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import type { Change } from '../types';
@@ -55,6 +55,26 @@ const STATUS_STYLES: Record<string, string> = {
   archived: 'bg-gray-500/10 text-gray-500 border-gray-500/20',
 };
 
+function LoadingState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-3">
+      <Loader2 className="h-8 w-8 text-primary animate-spin" />
+      <div className="text-muted-foreground text-sm">Loading content...</div>
+    </div>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+      <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center">
+        <FileText className="h-8 w-8 text-muted-foreground/40" />
+      </div>
+      <div className="text-muted-foreground">{message}</div>
+    </div>
+  );
+}
+
 export function DetailModal({ change, onClose }: DetailModalProps) {
   const { change: detail, loading } = useChange(change?.id || null);
   const [activeTab, setActiveTab] = useState<Tab>('proposal');
@@ -62,6 +82,8 @@ export function DetailModal({ change, onClose }: DetailModalProps) {
 
   useEffect(() => {
     if (change) {
+      // The dialog stays mounted between selections, so reset its controlled tab.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveTab(
         change.hasProposal ? 'proposal' :
         change.hasSpecs ? 'specs' :
@@ -73,28 +95,14 @@ export function DetailModal({ change, onClose }: DetailModalProps) {
   }, [change]);
 
   if (!change) return null;
+  const provenance = detail?.github ?? change.github;
+  const archiveWarning = detail?.archiveWarning ?? change.archiveWarning;
 
   const availableTabs: Tab[] = [];
   if (change.hasProposal) availableTabs.push('proposal');
   if (change.hasSpecs) availableTabs.push('specs');
   if (change.hasTasks) availableTabs.push('tasks');
   if (change.hasDesign) availableTabs.push('design');
-
-  const LoadingState = () => (
-    <div className="flex flex-col items-center justify-center py-16 gap-3">
-      <Loader2 className="h-8 w-8 text-primary animate-spin" />
-      <div className="text-muted-foreground text-sm">Loading content...</div>
-    </div>
-  );
-
-  const EmptyState = ({ message }: { message: string }) => (
-    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-      <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center">
-        <FileText className="h-8 w-8 text-muted-foreground/40" />
-      </div>
-      <div className="text-muted-foreground">{message}</div>
-    </div>
-  );
 
   return (
     <Dialog open={!!change} onOpenChange={(open) => !open && onClose()}>
@@ -145,6 +153,25 @@ export function DetailModal({ change, onClose }: DetailModalProps) {
                     {change.git.detached ? `detached @ ${change.git.commit}` : change.git.branch}
                   </Badge>
                 )}
+                {provenance && (
+                  <a
+                    href={provenance.pullRequest?.htmlUrl ?? provenance.htmlUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 font-mono text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    {provenance.pullRequest ? (
+                      <GitPullRequest className="h-3 w-3" />
+                    ) : (
+                      <GitBranch className="h-3 w-3" />
+                    )}
+                    {provenance.pullRequest
+                      ? `PR #${provenance.pullRequest.number} ${provenance.pullRequest.headRef} → ${provenance.pullRequest.baseRef}`
+                      : provenance.refName}
+                    {' @ '}{provenance.commit.slice(0, 8)}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
                 {change.track && <Badge variant="outline" className="text-xs">{change.track}</Badge>}
                 {change.targetBranch && <Badge variant="outline" className="font-mono text-xs">→ {change.targetBranch}</Badge>}
                 {(change.duplicateCount ?? 1) > 1 && (
@@ -166,6 +193,17 @@ export function DetailModal({ change, onClose }: DetailModalProps) {
                   </Badge>
                 )}
               </div>
+              {archiveWarning && (
+                <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                  <Archive className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    This change was merged on {new Date(archiveWarning.mergedAt).toLocaleDateString()} and has remained active for at least 15 days. Archive it in GitHub when appropriate; this dashboard will not modify it.{' '}
+                    <a href={archiveWarning.htmlUrl} target="_blank" rel="noreferrer" className="font-medium underline">
+                      PR #{archiveWarning.pullRequestNumber}
+                    </a>
+                  </span>
+                </div>
+              )}
             </div>
             {isMobile && (
               <DialogClose asChild>

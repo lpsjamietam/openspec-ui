@@ -100,6 +100,8 @@ export function KanbanBoard({
 
   // Reset active column index if it's out of bounds when columns change
   useEffect(() => {
+    // Keep the selected mobile column valid when the archived column disappears.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveColumnIndex(prev => {
       if (prev >= COLUMNS.length) {
         return COLUMNS.length - 1;
@@ -338,8 +340,8 @@ export function KanbanBoard({
   // Mobile: Single column with swipe
   if (isMobile) {
     const activeColumn = COLUMNS[activeColumnIndex];
-    const isIdeasColumn = (activeColumn as any).type === 'ideas';
-    const isArchivedColumn = (activeColumn as any).type === 'archived';
+    const isIdeasColumn = activeColumn.type === 'ideas';
+    const isArchivedColumn = activeColumn.type === 'archived';
     
     let columnItems: (Change | Idea)[] = [];
     if (isIdeasColumn) {
@@ -383,8 +385,8 @@ export function KanbanBoard({
             {/* Pill tabs */}
             <div className="flex bg-muted/50 rounded-full p-1 gap-0.5">
               {COLUMNS.map((col, idx) => {
-                const isIdeasColumn = (col as any).type === 'ideas';
-                const isArchivedColumn = (col as any).type === 'archived';
+                const isIdeasColumn = col.type === 'ideas';
+                const isArchivedColumn = col.type === 'archived';
                 let colItems: (Change | Idea)[] = [];
                 
                 if (isIdeasColumn) {
@@ -519,8 +521,8 @@ export function KanbanBoard({
       {/* Kanban columns */}
       <div className="flex gap-4 pb-4">
         {COLUMNS.map((column) => {
-          const isIdeasColumn = (column as any).type === 'ideas';
-          const isArchivedColumn = (column as any).type === 'archived';
+          const isIdeasColumn = column.type === 'ideas';
+          const isArchivedColumn = column.type === 'archived';
           let columnItems: (Change | Idea)[] = [];
           
           if (isIdeasColumn) {

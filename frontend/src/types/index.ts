@@ -6,6 +6,8 @@ export interface Source {
   track?: string | null;
   targetBranch?: string | null;
   git?: GitContext | null;
+  github?: GitHubProvenance | null;
+  canonicalSpecs?: boolean;
 }
 
 export interface GitContext {
@@ -13,6 +15,52 @@ export interface GitContext {
   branch: string | null;
   commit: string;
   detached: boolean;
+}
+
+export interface PullRequestProvenance {
+  number: number;
+  headRef: string;
+  baseRef: string;
+  htmlUrl: string;
+}
+
+export interface GitHubProvenance {
+  repository: string;
+  refName: string;
+  commit: string;
+  htmlUrl: string;
+  pullRequest?: PullRequestProvenance | null;
+}
+
+export interface ArchiveWarning {
+  pullRequestNumber: number;
+  mergedAt: string;
+  htmlUrl: string;
+}
+
+export type SyncState = 'disabled' | 'initializing' | 'healthy' | 'degraded';
+
+export interface ContributingRef {
+  sourceId: string;
+  refName: string;
+  commit: string;
+  pullRequestNumber?: number | null;
+}
+
+export interface SyncFailure {
+  category: string;
+  summary: string;
+  occurredAt: string;
+}
+
+export interface SyncHealth {
+  state: SyncState;
+  activeRevision?: string | null;
+  contributingRefs: ContributingRef[];
+  lastAttemptAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastFailure?: SyncFailure | null;
+  servingLastKnownGood: boolean;
 }
 
 export interface TaskStats {
@@ -47,6 +95,8 @@ export interface Change {
   artifacts: Artifact[];
   statusSource?: 'cli' | 'filesystem' | 'filesystem_fallback';
   git?: GitContext | null;
+  github?: GitHubProvenance | null;
+  archiveWarning?: ArchiveWarning | null;
   track?: string | null;
   targetBranch?: string | null;
   duplicateCount?: number;
@@ -74,12 +124,15 @@ export interface ChangeDetail {
   tasks: TasksContent | null;
   schema: string | null;
   artifacts: Artifact[];
+  github?: GitHubProvenance | null;
+  archiveWarning?: ArchiveWarning | null;
 }
 
 export interface Spec {
   id: string;
   sourceId: string;
   path: string;
+  github?: GitHubProvenance | null;
 }
 
 export interface SpecDetail {
@@ -87,6 +140,7 @@ export interface SpecDetail {
   sourceId: string;
   path: string;
   content: string;
+  github?: GitHubProvenance | null;
 }
 
 export interface Idea {

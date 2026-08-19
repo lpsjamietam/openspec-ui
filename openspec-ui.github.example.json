@@ -1,0 +1,17 @@
+{
+  "sourceMode": "github",
+  "github": {
+    "repository": "OWNER/REPOSITORY",
+    "specsRef": "demo/main",
+    "changesBaseRef": "demo/main",
+    "pullRequestTargets": ["demo/main", "main"],
+    "cachePath": "/data/openspec-ui",
+    "reconciliationIntervalSeconds": 900,
+    "maxPullRequests": 50
+  },
+  "port": 3000,
+  "bindAddress": "127.0.0.1",
+  "readOnly": true,
+  "deduplicateChanges": true,
+  "statusProvider": "filesystem"
+}

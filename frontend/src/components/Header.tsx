@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTheme } from '../hooks/useTheme';
-import { Menu, Settings, Sun, Moon, Sparkles, Lightbulb, LockKeyhole } from 'lucide-react';
+import { Menu, Settings, Sun, Moon, Sparkles, Lightbulb, LockKeyhole, Cloud, CheckCircle2, TriangleAlert, Loader2, ExternalLink } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -17,7 +17,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import type { Source } from '../types';
+import type { Source, SyncHealth } from '../types';
+import type { ConfigResponse } from '../hooks/useApi';
 
 type View = 'kanban' | 'specs';
 
@@ -33,6 +34,58 @@ interface HeaderProps {
   onOpenSettings?: () => void;
   onOpenNewIdea?: () => void;
   readOnly?: boolean;
+  sourceMode?: 'filesystem' | 'github';
+  githubConfig?: ConfigResponse['github'];
+  syncHealth?: SyncHealth | null;
+}
+
+function GithubSyncStatus({
+  sourceMode,
+  githubConfig,
+  syncHealth,
+}: Pick<HeaderProps, 'sourceMode' | 'githubConfig' | 'syncHealth'>) {
+  if (sourceMode !== 'github' || !githubConfig) return null;
+  const state = syncHealth?.state ?? 'initializing';
+  const lastSuccess = syncHealth?.lastSuccessAt
+    ? new Date(syncHealth.lastSuccessAt).toLocaleString()
+    : 'not synchronized yet';
+  const status = state === 'healthy'
+    ? { label: 'Current', Icon: CheckCircle2, tone: 'text-emerald-600 dark:text-emerald-400' }
+    : state === 'degraded'
+      ? { label: 'Degraded', Icon: TriangleAlert, tone: 'text-amber-600 dark:text-amber-400' }
+      : { label: 'Synchronizing', Icon: Loader2, tone: 'text-blue-600 dark:text-blue-400' };
+  const StatusIcon = status.Icon;
+
+  return (
+    <div
+      className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/40 py-2 text-[11px] text-muted-foreground"
+      role="status"
+    >
+      <span className="flex items-center gap-1.5 font-medium text-foreground">
+        <Cloud className="h-3.5 w-3.5" />
+        GitHub
+      </span>
+      <a
+        href={`https://github.com/${githubConfig.repository}/tree/${encodeURIComponent(githubConfig.specsRef)}`}
+        target="_blank"
+        rel="noreferrer"
+        className="flex items-center gap-1 font-mono hover:text-foreground"
+      >
+        {githubConfig.repository}@{githubConfig.specsRef}
+        <ExternalLink className="h-3 w-3" />
+      </a>
+      <span className={cn("flex items-center gap-1 font-medium", status.tone)}>
+        <StatusIcon className={cn("h-3.5 w-3.5", state === 'initializing' && 'animate-spin')} />
+        {status.label}
+      </span>
+      <span>Last successful sync: {lastSuccess}</span>
+      {state === 'degraded' && syncHealth?.lastFailure && (
+        <span className="font-medium text-amber-600 dark:text-amber-400">
+          Showing last-known-good data · {syncHealth.lastFailure.summary}
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function Header({
@@ -47,6 +100,9 @@ export function Header({
   onOpenSettings,
   onOpenNewIdea,
   readOnly = true,
+  sourceMode = 'filesystem',
+  githubConfig = null,
+  syncHealth = null,
 }: HeaderProps) {
   const { theme, toggle } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -56,7 +112,7 @@ export function Header({
     onOpenSettings?.();
   };
 
-  const Logo = () => (
+  const logo = (
     <div className="flex items-center gap-2.5 group cursor-default select-none shrink-0">
       <div className="relative">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--accent-violet)] to-[var(--accent-cyan)] flex items-center justify-center shadow-sm group-hover:shadow-md transition-shadow duration-300">
@@ -71,7 +127,7 @@ export function Header({
     </div>
   );
 
-  const ViewToggle = ({ mobile = false }: { mobile?: boolean }) => {
+  const renderViewToggle = (mobile = false) => {
     const handleViewChange = (view: View) => {
       onViewChange(view);
       if (mobile) {
@@ -142,7 +198,7 @@ export function Header({
     );
   };
 
-  const SourceSelect = () => (
+  const sourceSelect = (
     <Select
       value={selectedSourceId || "all"}
       onValueChange={(val) => onSourceChange(val === "all" ? null : val)}
@@ -169,7 +225,7 @@ export function Header({
     </Select>
   );
 
-  const ThemeToggle = ({ mobile = false }: { mobile?: boolean }) => {
+  const renderThemeToggle = (mobile = false) => {
     if (mobile) {
       return (
         <button
@@ -209,7 +265,7 @@ export function Header({
     );
   };
 
-  const SettingsButton = ({ mobile = false }: { mobile?: boolean }) => {
+  const renderSettingsButton = (mobile = false) => {
     if (mobile) {
       return (
         <button
@@ -236,7 +292,7 @@ export function Header({
     );
   };
 
-  const NewIdeaButton = ({ mobile = false }: { mobile?: boolean }) => {
+  const renderNewIdeaButton = (mobile = false) => {
     if (readOnly) return null;
     if (mobile) {
       return (
@@ -267,7 +323,7 @@ export function Header({
     );
   };
 
-  const ShowArchivedToggle = ({ mobile = false }: { mobile?: boolean }) => {
+  const renderShowArchivedToggle = (mobile = false) => {
     if (currentView !== 'kanban' || !onShowArchivedChange) {
       return null;
     }
@@ -319,11 +375,11 @@ export function Header({
         <div className="flex items-center justify-between h-16 overflow-hidden">
           {/* Left: Logo + Desktop Nav */}
           <div className="flex items-center gap-4 md:gap-6 min-w-0 flex-shrink overflow-hidden">
-            <Logo />
+            {logo}
             {/* Desktop view toggle */}
             {showViewToggle && (
               <div className="hidden md:block">
-                <ViewToggle />
+                {renderViewToggle()}
               </div>
             )}
           </div>
@@ -338,25 +394,25 @@ export function Header({
             )}
             {/* Show Archived toggle - visible on desktop when in kanban view */}
             <div className="hidden md:block">
-              <ShowArchivedToggle />
+              {renderShowArchivedToggle()}
             </div>
 
             {/* Source select - visible on all sizes */}
-            <SourceSelect />
+            {sourceSelect}
 
             {/* New Idea button - visible on desktop */}
             <div className="hidden md:block">
-              <NewIdeaButton />
+              {renderNewIdeaButton()}
             </div>
 
             {/* Settings button - visible on desktop */}
             <div className="hidden md:block">
-              <SettingsButton />
+              {renderSettingsButton()}
             </div>
 
             {/* Theme toggle - visible on desktop */}
             <div className="hidden md:block">
-              <ThemeToggle />
+              {renderThemeToggle()}
             </div>
 
             {/* Mobile menu */}
@@ -379,21 +435,21 @@ export function Header({
                       {showViewToggle && (
                         <div className="space-y-2">
                           <p className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">View</p>
-                          <ViewToggle mobile />
+                          {renderViewToggle(true)}
                         </div>
                       )}
                       {currentView === 'kanban' && onShowArchivedChange && (
                         <div className="space-y-2">
                           <p className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filter</p>
-                          <ShowArchivedToggle mobile />
+                          {renderShowArchivedToggle(true)}
                         </div>
                       )}
                       <div className="space-y-2">
                         <p className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Preferences</p>
                         <div className="space-y-1">
-                          <NewIdeaButton mobile />
-                          <SettingsButton mobile />
-                          <ThemeToggle mobile />
+                          {renderNewIdeaButton(true)}
+                          {renderSettingsButton(true)}
+                          {renderThemeToggle(true)}
                         </div>
                       </div>
                     </nav>
@@ -403,6 +459,11 @@ export function Header({
             </div>
           </div>
         </div>
+        <GithubSyncStatus
+          sourceMode={sourceMode}
+          githubConfig={githubConfig}
+          syncHealth={syncHealth}
+        />
       </div>
     </header>
   );

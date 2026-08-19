@@ -1,4 +1,5 @@
-use crate::config::{GitContext, Source};
+use crate::config::{GitContext, GithubProvenance, Source};
+use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, process::Command};
@@ -49,6 +50,14 @@ pub struct Artifact {
     pub missing_deps: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveWarning {
+    pub pull_request_number: u64,
+    pub merged_at: String,
+    pub html_url: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
@@ -67,6 +76,9 @@ pub struct Change {
     pub artifacts: Vec<Artifact>,
     pub status_source: StatusSource,
     pub git: Option<GitContext>,
+    pub github: Option<GithubProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_warning: Option<ArchiveWarning>,
     pub track: Option<String>,
     pub target_branch: Option<String>,
     pub duplicate_count: usize,
@@ -90,6 +102,9 @@ pub struct ChangeDetail {
     pub tasks: Option<TasksContent>,
     pub schema: Option<String>,
     pub artifacts: Vec<Artifact>,
+    pub github: Option<GithubProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_warning: Option<ArchiveWarning>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +125,7 @@ pub struct Spec {
     pub id: String,
     pub source_id: String,
     pub path: String,
+    pub github: Option<GithubProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +135,7 @@ pub struct SpecDetail {
     pub source_id: String,
     pub path: String,
     pub content: String,
+    pub github: Option<GithubProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,14 +162,14 @@ struct IdeaFrontmatter {
 
 fn parse_idea_frontmatter(content: &str) -> Option<IdeaFrontmatter> {
     let lines: Vec<&str> = content.lines().collect();
-    
+
     if !lines.first().map(|l| l.trim() == "---").unwrap_or(false) {
         return None;
     }
-    
+
     let mut frontmatter_lines = Vec::new();
     let mut i = 1;
-    
+
     while i < lines.len() {
         let line = lines[i].trim();
         if line == "---" {
@@ -161,13 +178,13 @@ fn parse_idea_frontmatter(content: &str) -> Option<IdeaFrontmatter> {
         frontmatter_lines.push(lines[i]);
         i += 1;
     }
-    
+
     serde_yaml::from_str::<IdeaFrontmatter>(&frontmatter_lines.join("\n")).ok()
 }
 
 fn extract_idea_title_and_description(content: &str) -> (String, String) {
     let lines: Vec<&str> = content.lines().collect();
-    
+
     let mut frontmatter_end = 0;
     for (i, line) in lines.iter().enumerate() {
         if i > 0 && line.trim() == "---" {
@@ -175,22 +192,20 @@ fn extract_idea_title_and_description(content: &str) -> (String, String) {
             break;
         }
     }
-    
+
     let content_lines: Vec<&str> = lines.iter().skip(frontmatter_end).copied().collect();
-    
+
     // Find the first H1 header to use as title
-    let title_idx = content_lines
-        .iter()
-        .position(|l| l.starts_with("# "));
-        
+    let title_idx = content_lines.iter().position(|l| l.starts_with("# "));
+
     let title = title_idx
         .map(|i| content_lines[i].trim_start_matches("# ").trim().to_string())
         .unwrap_or_else(|| "Untitled Idea".to_string());
-    
+
     // Description is everything after the title
     // If no title found, it's everything
     let start_idx = title_idx.map(|i| i + 1).unwrap_or(0);
-    
+
     let description = content_lines
         .iter()
         .skip(start_idx)
@@ -200,7 +215,7 @@ fn extract_idea_title_and_description(content: &str) -> (String, String) {
         .join("\n")
         .trim()
         .to_string();
-    
+
     (title, description)
 }
 
@@ -259,7 +274,11 @@ fn compute_artifacts(
         }
     };
 
-    let blocked_by_proposal = if has_proposal { vec![] } else { vec!["proposal"] };
+    let blocked_by_proposal = if has_proposal {
+        vec![]
+    } else {
+        vec!["proposal"]
+    };
     let mut blocked_by_both = Vec::new();
     if !has_design {
         blocked_by_both.push("design");
@@ -284,7 +303,11 @@ fn compute_artifacts(
 }
 
 /// Compute change status from artifacts and task stats
-fn compute_status(has_tasks: bool, task_stats: &Option<TaskStats>, is_archived: bool) -> ChangeStatus {
+fn compute_status(
+    has_tasks: bool,
+    task_stats: &Option<TaskStats>,
+    is_archived: bool,
+) -> ChangeStatus {
     if is_archived {
         return ChangeStatus::Archived;
     }
@@ -368,7 +391,7 @@ fn scan_change(change_path: &Path, source_id: &str, is_archived: bool) -> Option
     let status = compute_status(has_tasks, &task_stats, is_archived);
 
     Some(Change {
-        id: format!("{}/{}", source_id, name),
+        id: format!("{source_id}/{name}"),
         name: name.to_string(),
         source_id: source_id.to_string(),
         status,
@@ -381,6 +404,8 @@ fn scan_change(change_path: &Path, source_id: &str, is_archived: bool) -> Option
         artifacts: compute_artifacts(has_proposal, has_design, has_specs, has_tasks),
         status_source: StatusSource::Filesystem,
         git: None,
+        github: None,
+        archive_warning: None,
         track: None,
         target_branch: None,
         duplicate_count: 1,
@@ -400,7 +425,11 @@ pub fn scan_changes(source_path: &Path, source_id: &str) -> Vec<Change> {
     }
 
     // Scan active changes
-    for entry in std::fs::read_dir(&changes_path).into_iter().flatten().flatten() {
+    for entry in std::fs::read_dir(&changes_path)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
@@ -417,7 +446,11 @@ pub fn scan_changes(source_path: &Path, source_id: &str) -> Vec<Change> {
     // Scan archived changes
     let archive_path = changes_path.join("archive");
     if archive_path.exists() {
-        for entry in std::fs::read_dir(&archive_path).into_iter().flatten().flatten() {
+        for entry in std::fs::read_dir(&archive_path)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let path = entry.path();
             if let Some(change) = scan_change(&path, source_id, true) {
                 changes.push(change);
@@ -433,7 +466,40 @@ pub fn attach_source_context(changes: &mut [Change], source: &Source) {
         change.git = source.git.clone();
         change.track = source.track.clone();
         change.target_branch = source.target_branch.clone();
+        change.github = source.github.clone();
+        change.archive_warning = archive_warning(change, source, Utc::now());
     }
+}
+
+fn archive_warning(change: &Change, source: &Source, now: DateTime<Utc>) -> Option<ArchiveWarning> {
+    if change.is_archived || !source.include_changes || source.github.is_none() {
+        return None;
+    }
+    let merged = source
+        .merged_changes
+        .iter()
+        .find(|merged| merged.change_name == change.name)?;
+    let merged_at = DateTime::parse_from_rfc3339(&merged.merged_at)
+        .ok()?
+        .with_timezone(&Utc);
+    if now < merged_at + Duration::days(15) {
+        return None;
+    }
+    Some(ArchiveWarning {
+        pull_request_number: merged.pull_request_number,
+        merged_at: merged.merged_at.clone(),
+        html_url: merged.html_url.clone(),
+    })
+}
+
+pub fn attach_detail_source_context(detail: &mut ChangeDetail, source: &Source) {
+    detail.github = source.github.clone();
+    let matching_change = scan_changes(&source.path, &source.id)
+        .into_iter()
+        .find(|change| change.name == detail.name);
+    detail.archive_warning = matching_change
+        .as_ref()
+        .and_then(|change| archive_warning(change, source, Utc::now()));
 }
 
 pub fn deduplicate_changes(changes: Vec<Change>) -> Vec<Change> {
@@ -542,7 +608,11 @@ pub fn enrich_change_from_cli(
 }
 
 /// Get full details for a specific change
-pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str) -> Option<ChangeDetail> {
+pub fn get_change_detail(
+    source_path: &Path,
+    source_id: &str,
+    change_name: &str,
+) -> Option<ChangeDetail> {
     // Try active changes first
     let mut change_path = source_path.join("changes").join(change_name);
     let mut is_archived = false;
@@ -551,7 +621,11 @@ pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str)
         // Try archive - need to search for name ending
         let archive_path = source_path.join("changes").join("archive");
         if archive_path.exists() {
-            for entry in std::fs::read_dir(&archive_path).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(&archive_path)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
                 if name_str.ends_with(change_name) || name_str == change_name {
@@ -610,7 +684,7 @@ pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str)
     );
 
     Some(ChangeDetail {
-        id: format!("{}/{}", source_id, change_name),
+        id: format!("{source_id}/{change_name}"),
         name,
         source_id: source_id.to_string(),
         status,
@@ -620,6 +694,8 @@ pub fn get_change_detail(source_path: &Path, source_id: &str, change_name: &str)
         tasks,
         schema: read_change_schema(&change_path),
         artifacts,
+        github: None,
+        archive_warning: None,
     })
 }
 
@@ -629,17 +705,26 @@ pub fn scan_specs(source_path: &Path, source_id: &str) -> Vec<Spec> {
     let specs_path = source_path.join("specs");
 
     // Include root-level markdown files
-    for entry in std::fs::read_dir(source_path).into_iter().flatten().flatten() {
+    for entry in std::fs::read_dir(source_path)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         let path = entry.path();
         if path.is_file() && path.extension().is_some_and(|e| e == "md") {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             // Skip common change files and changes directory
-            if name != "proposal.md" && name != "tasks.md" && name != "design.md" && name != "changes" {
+            if name != "proposal.md"
+                && name != "tasks.md"
+                && name != "design.md"
+                && name != "changes"
+            {
                 let id = format!("{}/{}", source_id, name.replace(".md", ""));
                 specs.push(Spec {
                     id,
                     source_id: source_id.to_string(),
                     path: name.to_string(),
+                    github: None,
                 });
             }
         }
@@ -652,11 +737,16 @@ pub fn scan_specs(source_path: &Path, source_id: &str) -> Vec<Spec> {
             if path.is_file() && path.extension().is_some_and(|e| e == "md") {
                 let relative = path.strip_prefix(&specs_path).unwrap_or(path);
                 let path_str = relative.display().to_string();
-                let id = format!("{}/{}", source_id, path_str.replace("/spec.md", "").replace(".md", ""));
+                let id = format!(
+                    "{}/{}",
+                    source_id,
+                    path_str.replace("/spec.md", "").replace(".md", "")
+                );
                 specs.push(Spec {
                     id,
                     source_id: source_id.to_string(),
                     path: path_str,
+                    github: None,
                 });
             }
         }
@@ -679,13 +769,18 @@ pub fn get_spec_detail(source_path: &Path, source_id: &str, spec_path: &str) -> 
     }
 
     let content = std::fs::read_to_string(&full_path).ok()?;
-    let id = format!("{}/{}", source_id, spec_path.replace("/spec.md", "").replace(".md", ""));
+    let id = format!(
+        "{}/{}",
+        source_id,
+        spec_path.replace("/spec.md", "").replace(".md", "")
+    );
 
     Some(SpecDetail {
         id,
         source_id: source_id.to_string(),
         path: spec_path.to_string(),
         content,
+        github: None,
     })
 }
 
@@ -698,9 +793,13 @@ pub fn scan_ideas(source_path: &Path, source_id: &str) -> Vec<Idea> {
         return ideas;
     }
 
-    for entry in std::fs::read_dir(&ideas_path).into_iter().flatten().flatten() {
+    for entry in std::fs::read_dir(&ideas_path)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         let path = entry.path();
-        
+
         if path.is_file() && path.extension().is_some_and(|e| e == "md") {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Some(frontmatter) = parse_idea_frontmatter(&content) {
@@ -724,41 +823,47 @@ pub fn scan_ideas(source_path: &Path, source_id: &str) -> Vec<Idea> {
 }
 
 /// Save idea to file system
-pub fn save_idea(source_path: &Path, source_id: &str, id: &str, title: &str, description: &str, project_id: Option<&str>) -> std::io::Result<Idea> {
+pub fn save_idea(
+    source_path: &Path,
+    source_id: &str,
+    id: &str,
+    title: &str,
+    description: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Idea> {
     let ideas_path = source_path.join("ideas");
-    
+
     if !ideas_path.exists() {
         std::fs::create_dir_all(&ideas_path)?;
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    
+
     let project_id_line = if let Some(pid) = project_id {
-        format!("projectId: {}", pid)
+        format!("projectId: {pid}")
     } else {
         String::new()
     };
-    
+
     let content = format!(
         r#"---
-id: {}
-{}
-createdAt: {}
-updatedAt: {}
+id: {id}
+{project_id_line}
+createdAt: {now}
+updatedAt: {now}
 ---
 
-# {}
+# {title}
 
-{}
-"#,
-        id, project_id_line, now, now, title, description
+{description}
+"#
     );
 
-    let idea_path = ideas_path.join(format!("{}.md", id));
+    let idea_path = ideas_path.join(format!("{id}.md"));
     std::fs::write(&idea_path, content)?;
 
     Ok(Idea {
-        id: format!("{}/{}", source_id, id),
+        id: format!("{source_id}/{id}"),
         source_id: source_id.to_string(),
         project_id: project_id.map(|s| s.to_string()),
         title: title.to_string(),
@@ -770,7 +875,7 @@ updatedAt: {}
 
 /// Delete idea from file system
 pub fn delete_idea(source_path: &Path, id: &str) -> std::io::Result<()> {
-    let idea_path = source_path.join("ideas").join(format!("{}.md", id));
+    let idea_path = source_path.join("ideas").join(format!("{id}.md"));
 
     if idea_path.exists() {
         std::fs::remove_file(idea_path)?;
@@ -780,28 +885,31 @@ pub fn delete_idea(source_path: &Path, id: &str) -> std::io::Result<()> {
 }
 
 /// Update idea in file system
-pub fn update_idea(source_path: &Path, source_id: &str, id: &str, title: &str, description: &str) -> std::io::Result<Idea> {
-    let idea_path = source_path.join("ideas").join(format!("{}.md", id));
+pub fn update_idea(
+    source_path: &Path,
+    source_id: &str,
+    id: &str,
+    title: &str,
+    description: &str,
+) -> std::io::Result<Idea> {
+    let idea_path = source_path.join("ideas").join(format!("{id}.md"));
 
     if !idea_path.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Idea file not found"
+            "Idea file not found",
         ));
     }
 
     let existing_content = std::fs::read_to_string(&idea_path)?;
     let frontmatter = parse_idea_frontmatter(&existing_content).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid idea file format"
-        )
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid idea file format")
     })?;
 
     let now = chrono::Utc::now().to_rfc3339();
 
     let project_id_line = if let Some(ref pid) = frontmatter.project_id {
-        format!("projectId: {}", pid)
+        format!("projectId: {pid}")
     } else {
         String::new()
     };
@@ -824,7 +932,7 @@ updatedAt: {}
     std::fs::write(&idea_path, content)?;
 
     Ok(Idea {
-        id: format!("{}/{}", source_id, id),
+        id: format!("{source_id}/{id}"),
         source_id: source_id.to_string(),
         project_id: frontmatter.project_id,
         title: title.to_string(),
@@ -838,6 +946,33 @@ updatedAt: {}
 mod tests {
     use super::*;
 
+    fn github_source(path: &Path) -> Source {
+        Source {
+            id: "github-base".to_string(),
+            name: "ToruAI/openspec-ui".to_string(),
+            path: path.to_path_buf(),
+            valid: true,
+            track: Some("github".to_string()),
+            target_branch: Some("demo/main".to_string()),
+            git: None,
+            github: Some(GithubProvenance {
+                repository: "ToruAI/openspec-ui".to_string(),
+                ref_name: "demo/main".to_string(),
+                commit: "abc123".to_string(),
+                html_url: "https://github.com/ToruAI/openspec-ui/tree/abc123".to_string(),
+                pull_request: None,
+            }),
+            canonical_specs: true,
+            include_changes: true,
+            merged_changes: vec![crate::config::MergedChange {
+                change_name: "case-activity-metrics".to_string(),
+                pull_request_number: 12,
+                merged_at: "2026-08-01T00:00:00Z".to_string(),
+                html_url: "https://github.com/ToruAI/openspec-ui/pull/12".to_string(),
+            }],
+        }
+    }
+
     #[test]
     fn test_parse_idea_frontmatter_with_empty_line() {
         let content = r#"---
@@ -849,7 +984,7 @@ updatedAt: 2026-01-01T00:00:00+00:00
 
 # Title
 Description"#;
-        
+
         let frontmatter = parse_idea_frontmatter(content);
         assert!(frontmatter.is_some());
         let f = frontmatter.unwrap();
@@ -874,6 +1009,40 @@ Description"#;
         let stats = parse_task_stats(content);
         assert_eq!(stats.total, 5);
         assert_eq!(stats.done, 2);
+    }
+
+    #[test]
+    fn archive_warning_starts_at_exactly_fifteen_full_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let change_path = dir.path().join("case-activity-metrics");
+        std::fs::create_dir_all(&change_path).unwrap();
+        std::fs::write(change_path.join("proposal.md"), "# Proposal\n").unwrap();
+        let change = scan_change(&change_path, "github-base", false).unwrap();
+        let source = github_source(dir.path());
+        let just_before = DateTime::parse_from_rfc3339("2026-08-15T23:59:59Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let boundary = DateTime::parse_from_rfc3339("2026-08-16T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let after = DateTime::parse_from_rfc3339("2026-08-20T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert!(archive_warning(&change, &source, just_before).is_none());
+        assert!(archive_warning(&change, &source, boundary).is_some());
+        assert!(archive_warning(&change, &source, after).is_some());
+    }
+
+    #[test]
+    fn archived_change_never_receives_archive_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let change_path = dir.path().join("case-activity-metrics");
+        std::fs::create_dir_all(&change_path).unwrap();
+        std::fs::write(change_path.join("proposal.md"), "# Proposal\n").unwrap();
+        let change = scan_change(&change_path, "github-base", true).unwrap();
+        let source = github_source(dir.path());
+        assert!(archive_warning(&change, &source, Utc::now()).is_none());
     }
 
     #[test]
@@ -939,7 +1108,8 @@ Description"#;
         std::fs::create_dir_all(&change).unwrap();
         std::fs::write(change.join(".openspec.yaml"), "schema: spec-driven\n").unwrap();
 
-        let found = scan_change(&change, "repo", false).expect("marker-only change must be visible");
+        let found =
+            scan_change(&change, "repo", false).expect("marker-only change must be visible");
         assert_eq!(found.name, "fresh-change");
         assert_eq!(found.status, ChangeStatus::Draft);
         assert!(!found.has_proposal);
@@ -1075,10 +1245,7 @@ Description"#;
         );
 
         // Archived = Archived regardless
-        assert_eq!(
-            compute_status(false, &None, true),
-            ChangeStatus::Archived
-        );
+        assert_eq!(compute_status(false, &None, true), ChangeStatus::Archived);
 
         // Archived even if all tasks done
         assert_eq!(

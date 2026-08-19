@@ -2,6 +2,7 @@
 target/
 **/*.rs.bk
 Cargo.lock
+!backend/Cargo.lock
 
 # Node.js
 node_modules/
@@ -67,4 +68,3 @@ coverage/
 .pytest_cache/
 __pycache__/
 *.pyc
-
