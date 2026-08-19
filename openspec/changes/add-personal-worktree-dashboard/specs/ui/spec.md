@@ -28,3 +28,10 @@ The dashboard MUST disclose grouped worktrees and filesystem status fallback.
 #### Scenario: CLI enrichment fails
 - **WHEN** a change reports filesystem status provenance while automatic CLI status is configured
 - **THEN** the UI marks the status as a fallback rather than implying CLI authority
+
+### Requirement: Canonical Specifications View
+The Specs tab MUST present accepted specifications from the configured canonical source rather than mixing copies from feature worktrees.
+
+#### Scenario: Demo base owns accepted specifications
+- **WHEN** `specsSourceId` identifies the configured `demo/main` source
+- **THEN** the Specs tab lists and opens only specifications from that source

@@ -43,3 +43,14 @@ The application MUST be able to collapse changes whose names and artifact conten
 #### Scenario: Same-named changes have different artifacts
 - **WHEN** artifact content differs between sources
 - **THEN** each change remains independently visible
+
+### Requirement: Canonical Specs Source
+The application MUST support designating one configured source as the canonical source for accepted specifications while continuing to aggregate proposed changes across every valid source.
+
+#### Scenario: Operator selects the demo base
+- **WHEN** configuration sets `specsSourceId` to the source representing `demo/main`
+- **THEN** Specs list and detail requests use only that source while Changes continue to include configured feature worktrees
+
+#### Scenario: Existing configuration omits the selection
+- **WHEN** `specsSourceId` is absent
+- **THEN** the application preserves the existing multi-source Specs behavior

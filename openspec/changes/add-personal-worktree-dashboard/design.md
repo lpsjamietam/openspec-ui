@@ -16,6 +16,8 @@ OpenSpec UI currently derives one fixed artifact graph directly from files, trea
   - Rationale: copied OpenSpec trees collapse, while independently changed artifacts remain distinct.
 - Decision: Git context is discovered from the source path, while `track` and `targetBranch` remain explicit optional source configuration.
   - Rationale: the current branch is factual; delivery ownership and intended merge target cannot be safely inferred.
+- Decision: an optional `specsSourceId` selects the single source used by both Specs list and detail endpoints; omitting it preserves the multi-source upstream behavior.
+  - Rationale: accepted specifications have one canonical branch, while proposed changes may legitimately span many local worktrees. Enforcing the selection in the API prevents a direct detail request from bypassing the UI filter.
 
 ## Risks / Trade-offs
 - Spawning the CLI adds latency per distinct active change. Duplicate suppression happens before CLI enrichment so copied worktrees incur one command.
@@ -24,3 +26,4 @@ OpenSpec UI currently derives one fixed artifact graph directly from files, trea
 
 ## Migration Plan
 Existing JSON configuration files require no edits. Users who need idea or settings mutation must explicitly set `readOnly` to `false`. Users who intentionally expose the server must explicitly set `bindAddress`.
+Users who want a canonical Specs browser set `specsSourceId` to one configured source name. Each machine still supplies its own filesystem paths; only committed repository content travels through Git.

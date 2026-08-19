@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use clap::Parser as ClapParser;
-use config::{GitContext, SourceConfig, StatusProvider};
+use config::{GitContext, Source, SourceConfig, StatusProvider};
 use config_manager::{AppState, ConfigManager, ConfigResponse};
 use futures::stream::{self, Stream};
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -210,8 +210,16 @@ async fn get_change_detail(
 async fn get_specs(State(state): State<AppState>) -> Json<SpecsResponse> {
     let mut all_specs = Vec::new();
     let sources = state.get_sources().await;
+    let specs_source_id = state
+        .config_manager
+        .load_config()
+        .ok()
+        .and_then(|config| config.specs_source_id);
 
-    for source in sources.iter().filter(|s| s.valid) {
+    for source in sources
+        .iter()
+        .filter(|source| is_specs_source(source, specs_source_id.as_deref()))
+    {
         let specs = parser::scan_specs(&source.path, &source.id);
         all_specs.extend(specs);
     }
@@ -233,9 +241,17 @@ async fn get_spec_detail(
     let spec_name = parts[1];
 
     let sources = state.get_sources().await;
+    let specs_source_id = state
+        .config_manager
+        .load_config()
+        .ok()
+        .and_then(|config| config.specs_source_id);
     let source = sources
         .iter()
-        .find(|s| s.id == source_id && s.valid)
+        .find(|source| {
+            source.id == source_id
+                && is_specs_source(source, specs_source_id.as_deref())
+        })
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // Try different path formats
@@ -252,6 +268,10 @@ async fn get_spec_detail(
     }
 
     Err(StatusCode::NOT_FOUND)
+}
+
+fn is_specs_source(source: &Source, specs_source_id: Option<&str>) -> bool {
+    source.valid && specs_source_id.is_none_or(|source_id| source.id == source_id)
 }
 
 async fn get_ideas(State(state): State<AppState>) -> Json<IdeasResponse> {
@@ -664,6 +684,7 @@ async fn main() {
         .get_config_response()
         .unwrap_or(ConfigResponse {
             sources: vec![],
+            specs_source_id: None,
             port: 3000,
             read_only: true,
             bind_address: "127.0.0.1".to_string(),
@@ -790,6 +811,52 @@ mod tests {
         )
     }
 
+    fn specs_test_state(specs_source_id: Option<&str>) -> (AppState, PathBuf) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("openspec-ui-specs-{suffix}"));
+        let demo_openspec = root.join("demo/openspec");
+        let feature_openspec = root.join("feature/openspec");
+
+        std::fs::create_dir_all(demo_openspec.join("specs/demo-capability")).unwrap();
+        std::fs::create_dir_all(feature_openspec.join("specs/feature-capability")).unwrap();
+        std::fs::write(
+            demo_openspec.join("specs/demo-capability/spec.md"),
+            "# Demo capability\n",
+        )
+        .unwrap();
+        std::fs::write(
+            feature_openspec.join("specs/feature-capability/spec.md"),
+            "# Feature capability\n",
+        )
+        .unwrap();
+
+        let mut config = serde_json::json!({
+            "sources": [
+                {"name": "demo-base", "path": demo_openspec},
+                {"name": "feature-worktree", "path": feature_openspec}
+            ]
+        });
+        if let Some(source_id) = specs_source_id {
+            config["specsSourceId"] = serde_json::Value::String(source_id.to_string());
+        }
+
+        let config_path = root.join("config.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let manager = Arc::new(ConfigManager::new(config_path));
+        let sources = manager.load_sources().unwrap();
+        let (update_tx, _) = broadcast::channel(1);
+        let (config_update_tx, _) = broadcast::channel(1);
+
+        (
+            AppState::new(sources, manager, update_tx, config_update_tx),
+            root,
+        )
+    }
+
     #[test]
     fn read_only_mode_rejects_mutations() {
         let (state, config_path) = test_state(true);
@@ -804,5 +871,33 @@ mod tests {
         let (state, config_path) = test_state(false);
         assert!(require_writable(&state).is_ok());
         std::fs::remove_file(config_path).ok();
+    }
+
+    #[tokio::test]
+    async fn configured_specs_source_restricts_list_and_detail() {
+        let (state, root) = specs_test_state(Some("demo-base"));
+
+        let Json(response) = get_specs(State(state.clone())).await;
+        assert_eq!(response.specs.len(), 1);
+        assert_eq!(response.specs[0].source_id, "demo-base");
+
+        let result = get_spec_detail(
+            State(state),
+            Path("feature-worktree/feature-capability".to_string()),
+        )
+        .await;
+        assert!(matches!(result, Err(StatusCode::NOT_FOUND)));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn omitted_specs_source_preserves_multi_source_behavior() {
+        let (state, root) = specs_test_state(None);
+
+        let Json(response) = get_specs(State(state)).await;
+        assert_eq!(response.specs.len(), 2);
+
+        std::fs::remove_dir_all(root).ok();
     }
 }

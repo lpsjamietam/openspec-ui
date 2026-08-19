@@ -129,6 +129,7 @@ Create `openspec-ui.json`:
       "targetBranch": "demo/main"
     }
   ],
+  "specsSourceId": "my-project-demo",
   "port": 3000,
   "bindAddress": "127.0.0.1",
   "readOnly": true,
@@ -145,6 +146,7 @@ Create `openspec-ui.json`:
 | `sources[].path` | Path to the `openspec/` directory |
 | `sources[].track` | Optional workflow label such as `demo` or `production` |
 | `sources[].targetBranch` | Optional intended merge target such as `demo/main` or `main` |
+| `specsSourceId` | Optional source name used exclusively by the Specs list and detail APIs; omit it to browse specs from every source |
 | `port` | Server port (default: 3000) |
 | `bindAddress` | Listener address (default: `127.0.0.1`) |
 | `readOnly` | Reject all idea/config mutations and hide mutation controls (default: `true`) |
@@ -154,6 +156,19 @@ Create `openspec-ui.json`:
 
 Git branch, short commit, detached-HEAD state, and worktree root are discovered automatically for each source. Deduplication only groups byte-identical change directories; divergent worktree copies remain separate. The representative card lists all grouped source IDs.
 
+### Using the dashboard on another computer
+
+OpenSpec UI reads the filesystem paths in that computer's configuration. Git transfers committed files, but it does not transfer another machine's uncommitted changes, worktrees, or absolute paths.
+
+A fresh clone checked out on `main` can show only the OpenSpec content committed on `main`. To use `demo/main` as the canonical Specs source, fetch it into a local worktree and point the local configuration at that worktree:
+
+```bash
+git fetch origin demo/main
+git worktree add ../my-project-demo origin/demo/main
+```
+
+Then set the matching source name in `specsSourceId`. Feature Changes appear only when their branches are committed and cloned/fetched locally, or when their local worktrees are configured on that machine.
+
 ### Writable mode
 
 Set `"readOnly": false` only when you intentionally want the dashboard to create, edit, or delete ideas and update its source list. OpenSpec changes and specs remain display-only; the writable endpoints are limited to the existing idea and source-configuration operations.
@@ -162,7 +177,7 @@ Set `"readOnly": false` only when you intentionally want the dashboard to create
 
 - **Kanban Board** — Ideas, Todo, In Progress, Done, Archived columns
 - **Artifact chain** — per change: written / ready to write / blocked, with what it is waiting for
-- **Specs Browser** — Browse specifications across all repositories
+- **Specs Browser** — Browse specifications from one configured canonical source, or across all sources when no source is selected
 - **Detail View** — View proposals, specs, tasks, and design documents
 - **Real-time Updates** — Auto-refreshes when files change (SSE)
 - **Mobile-first** — Works great on phone and tablet
