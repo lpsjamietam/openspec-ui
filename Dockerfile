@@ -17,7 +17,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Rust builder - Build backend
-FROM rust:1.82-slim AS backend-builder
+FROM rust:1.88-slim AS backend-builder
 
 WORKDIR /app
 
@@ -57,16 +57,21 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    git \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN useradd -m -u 1000 openspec
+RUN useradd -m -u 1000 openspec && \
+    mkdir -p /data/openspec-ui && \
+    chown -R openspec:openspec /data/openspec-ui
 
 # Copy backend binary from builder
 COPY --from=backend-builder /app/backend/target/release/openspec-ui /app/openspec-ui
 
-# Copy config file
-COPY openspec-ui.json /app/openspec-ui.json
+# Ship the local-filesystem example as the default; deployments normally mount
+# their own configuration over this path or set OPENSPEC_UI_CONFIG.
+COPY openspec-ui.example.json /app/openspec-ui.json
 
 # Copy frontend assets from builder
 COPY --from=frontend-builder /app/frontend/dist /app/dist
@@ -82,6 +87,9 @@ ENV PORT=3000
 
 # Expose port
 EXPOSE 3000
+
+# Hosted mode writes snapshot generations only beneath this mounted cache.
+VOLUME ["/data/openspec-ui"]
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

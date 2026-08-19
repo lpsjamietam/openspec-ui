@@ -1,9 +1,10 @@
-use crate::config::{Config, Source, SourceConfig, StatusProvider};
-use serde::Serialize;
-use std::{
-    path::PathBuf,
-    sync::Arc,
+use crate::{
+    config::{Config, GithubConfig, Source, SourceConfig, SourceMode, StatusProvider},
+    snapshot::{ActiveSnapshot, SyncHealth},
+    sync_runtime::GithubRuntime,
 };
+use serde::Serialize;
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone)]
@@ -11,10 +12,11 @@ pub struct AppState {
     pub inner: Arc<RwLock<AppStateInner>>,
     pub config_manager: Arc<ConfigManager>,
     pub update_tx: broadcast::Sender<()>,
+    github_runtime: Arc<RwLock<Option<Arc<GithubRuntime>>>>,
 }
 
 pub struct AppStateInner {
-    pub sources: Vec<Source>,
+    pub snapshot: ActiveSnapshot,
     pub config_update_tx: broadcast::Sender<()>,
 }
 
@@ -25,27 +27,69 @@ impl AppState {
         update_tx: broadcast::Sender<()>,
         config_update_tx: broadcast::Sender<()>,
     ) -> Self {
+        let snapshot = if config_manager
+            .load_config()
+            .is_ok_and(|config| config.is_github_mode())
+        {
+            ActiveSnapshot::initializing()
+        } else {
+            ActiveSnapshot::filesystem(sources)
+        };
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
-                sources,
+                snapshot,
                 config_update_tx,
             })),
             config_manager,
             update_tx,
+            github_runtime: Arc::new(RwLock::new(None)),
         }
     }
 
     pub async fn get_sources(&self) -> Vec<Source> {
-        self.inner.read().await.sources.clone()
+        self.inner.read().await.snapshot.sources.clone()
     }
 
     pub async fn update_sources(&self, sources: Vec<Source>) {
         let mut inner = self.inner.write().await;
-        inner.sources = sources;
+        inner.snapshot = ActiveSnapshot::filesystem(sources);
+    }
+
+    pub async fn sync_health(&self) -> SyncHealth {
+        self.inner.read().await.snapshot.health.clone()
+    }
+
+    pub async fn update_sync_health(&self, health: SyncHealth) {
+        self.inner.write().await.snapshot.health = health;
+    }
+
+    pub async fn publish_snapshot(&self, snapshot: ActiveSnapshot) -> bool {
+        let changed = {
+            let mut inner = self.inner.write().await;
+            if inner.snapshot.revision == snapshot.revision {
+                inner.snapshot.health = snapshot.health;
+                false
+            } else {
+                inner.snapshot = snapshot;
+                true
+            }
+        };
+        if changed {
+            let _ = self.update_tx.send(());
+        }
+        changed
     }
 
     pub async fn config_manager(&self) -> Arc<ConfigManager> {
         self.config_manager.clone()
+    }
+
+    pub async fn set_github_runtime(&self, runtime: Arc<GithubRuntime>) {
+        *self.github_runtime.write().await = Some(runtime);
+    }
+
+    pub async fn github_runtime(&self) -> Option<Arc<GithubRuntime>> {
+        self.github_runtime.read().await.clone()
     }
 }
 
@@ -56,6 +100,9 @@ pub struct ConfigManager {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigResponse {
+    pub source_mode: SourceMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<GithubConfig>,
     pub sources: Vec<SourceConfig>,
     pub specs_source_id: Option<String>,
     pub port: u16,
@@ -73,6 +120,9 @@ impl ConfigManager {
 
     pub fn load_sources(&self) -> Result<Vec<Source>, anyhow::Error> {
         let config = self.load_config()?;
+        if config.is_github_mode() {
+            return Ok(Vec::new());
+        }
         let default_path = PathBuf::from(".");
         let base_path = self.config_path.parent().unwrap_or(&default_path);
         Ok(config.resolve_sources(base_path))
@@ -81,6 +131,8 @@ impl ConfigManager {
     pub fn get_config_response(&self) -> Result<ConfigResponse, anyhow::Error> {
         let config = self.load_config()?;
         Ok(ConfigResponse {
+            source_mode: config.source_mode,
+            github: config.github,
             sources: config.sources,
             specs_source_id: config.specs_source_id,
             port: config.port,
@@ -100,6 +152,18 @@ impl ConfigManager {
         Ok(self.load_config()?.read_only)
     }
 
+    pub fn resolve_cache_path(&self, github: &GithubConfig) -> PathBuf {
+        let configured = PathBuf::from(&github.cache_path);
+        if configured.is_absolute() {
+            configured
+        } else {
+            self.config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(configured)
+        }
+    }
+
     /// Validates sources and returns (valid_sources, warnings).
     /// Invalid sources are filtered out with warnings instead of failing the entire request.
     pub fn validate_sources(&self, sources: &[SourceConfig]) -> (Vec<SourceConfig>, Vec<String>) {
@@ -117,11 +181,17 @@ impl ConfigManager {
             };
 
             if !path.exists() {
-                warnings.push(format!("Skipping '{}': path does not exist: {}", source.name, source.path));
+                warnings.push(format!(
+                    "Skipping '{}': path does not exist: {}",
+                    source.name, source.path
+                ));
                 continue;
             }
             if !path.is_dir() {
-                warnings.push(format!("Skipping '{}': path is not a directory: {}", source.name, source.path));
+                warnings.push(format!(
+                    "Skipping '{}': path is not a directory: {}",
+                    source.name, source.path
+                ));
                 continue;
             }
             valid.push(source.clone());
@@ -133,6 +203,10 @@ impl ConfigManager {
     pub fn save_sources(&self, sources: &[SourceConfig]) -> Result<(), anyhow::Error> {
         // Load existing config to preserve other fields (like port)
         let mut config = Config::load(&self.config_path)?;
+        anyhow::ensure!(
+            config.source_mode == SourceMode::Filesystem,
+            "filesystem sources cannot be changed while GitHub mode is active"
+        );
         config.sources = sources.to_vec();
 
         let content = serde_json::to_string_pretty(&config)?;

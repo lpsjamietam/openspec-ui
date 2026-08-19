@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Source, Change, ChangeDetail, Spec, SpecDetail, Idea } from '../types';
+import type { Source, Change, ChangeDetail, Spec, SpecDetail, Idea, SyncHealth } from '../types';
 
 const API_BASE = '/api';
 
@@ -113,6 +113,8 @@ export function useSpecs() {
       const data = await fetchJson<{ specs: Spec[] }>(`${API_BASE}/specs`);
       setSpecs(data.specs);
       setError(null);
+    } catch (e) {
+      setError(e as Error);
     } finally {
       setLoading(false);
     }
@@ -140,6 +142,8 @@ export function useSpec(id: string | null) {
       const data = await fetchJson<SpecDetail>(`${API_BASE}/specs/${encodeURIComponent(id)}`);
       setSpec(data);
       setError(null);
+    } catch (e) {
+      setError(e as Error);
     } finally {
       setLoading(false);
     }
@@ -249,6 +253,19 @@ export interface SourceConfig {
 }
 
 export interface ConfigResponse {
+  sourceMode: 'filesystem' | 'github';
+  github?: {
+    repository: string;
+    specsRef: string;
+    changesBaseRef: string;
+    pullRequestTargets: string[];
+    cachePath: string;
+    reconciliationIntervalSeconds: number;
+    maxPullRequests: number;
+    apiBaseUrl: string;
+    maxFileBytes: number;
+    maxSnapshotBytes: number;
+  } | null;
   sources: SourceConfig[];
   specsSourceId?: string | null;
   port: number;
@@ -257,6 +274,30 @@ export interface ConfigResponse {
   deduplicateChanges: boolean;
   statusProvider: 'auto' | 'filesystem';
   openspecCommand: string;
+}
+
+export function useSyncHealth() {
+  const [health, setHealth] = useState<SyncHealth | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const refetch = useCallback(async () => {
+    try {
+      setLoading(true);
+      setHealth(await fetchJson<SyncHealth>(`${API_BASE}/sync-health`));
+      setError(null);
+    } catch (e) {
+      setError(e as Error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  return { health, loading, error, refetch };
 }
 
 export interface ErrorResponse {

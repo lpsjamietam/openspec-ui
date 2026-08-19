@@ -95,6 +95,8 @@ docker run -p 127.0.0.1:3000:3000 \
 
 The container must listen on `0.0.0.0` internally for Docker port forwarding; publishing the port to `127.0.0.1` keeps it local to your machine. Read-only mounts add a second safety boundary.
 
+For a shared server that reads committed OpenSpec content directly from GitHub, use the GitHub App configuration and deployment guide in [GitHub server mode](docs/github-server-mode.md). The hosted mode deliberately excludes local worktrees and unpublished files, uses one canonical ref for accepted Specs, and adds eligible pull-request Changes with their provenance.
+
 ### Option 3: Build from Source
 
 **Prerequisites:** Rust (stable), Node.js 18+
@@ -153,6 +155,8 @@ Create `openspec-ui.json`:
 | `deduplicateChanges` | Group changes with the same name and content across worktrees (default: `true`) |
 | `statusProvider` | `auto` tries the OpenSpec CLI, then falls back to files; `filesystem` never shells out (default: `auto`) |
 | `openspecCommand` | OpenSpec executable used by `auto` mode (default: `openspec`) |
+
+`sourceMode: "github"` uses the separate `github` configuration shown in [`openspec-ui.github.example.json`](openspec-ui.github.example.json). It requires `readOnly: true`, a persistent cache path, and GitHub App credentials supplied through the environment or secret files.
 
 Git branch, short commit, detached-HEAD state, and worktree root are discovered automatically for each source. Deduplication only groups byte-identical change directories; divergent worktree copies remain separate. The representative card lists all grouped source IDs.
 

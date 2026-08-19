@@ -1,7 +1,7 @@
 import type { Change, Artifact } from '../types';
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Layers, CheckSquare, Palette, GitBranch, Copy, TriangleAlert } from 'lucide-react';
+import { FileText, Layers, CheckSquare, Palette, GitBranch, Copy, TriangleAlert, GitPullRequest, ExternalLink, Archive } from 'lucide-react';
 import { cn } from "@/lib/utils";
 
 interface ChangeCardProps {
@@ -51,9 +51,11 @@ export function ChangeCard({ change, onClick }: ChangeCardProps) {
   const progress = taskStats && taskStats.total > 0 ? (taskStats.done / taskStats.total) * 100 : 0;
   const isComplete = progress === 100;
   const states = artifactStates(change);
-  const branchLabel = change.git?.detached
-    ? `detached @ ${change.git.commit}`
-    : change.git?.branch;
+  const branchLabel = change.github?.pullRequest
+    ? change.github.pullRequest.headRef
+    : change.github?.refName ?? (change.git?.detached
+      ? `detached @ ${change.git.commit}`
+      : change.git?.branch);
 
   return (
     <Card
@@ -78,16 +80,47 @@ export function ChangeCard({ change, onClick }: ChangeCardProps) {
           </Badge>
         </div>
 
-        {(branchLabel || change.track || change.targetBranch) && (
+        {(branchLabel || change.track || change.targetBranch || change.github) && (
           <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
             {branchLabel && (
-              <span className="flex min-w-0 items-center gap-1 font-mono" title={change.git?.worktreeRoot}>
-                <GitBranch className="h-3 w-3 shrink-0" />
+              <span className="flex min-w-0 items-center gap-1 font-mono" title={change.git?.worktreeRoot ?? change.github?.commit}>
+                {change.github?.pullRequest ? <GitPullRequest className="h-3 w-3 shrink-0" /> : <GitBranch className="h-3 w-3 shrink-0" />}
                 <span className="truncate">{branchLabel}</span>
               </span>
             )}
+            {change.github?.pullRequest && (
+              <a
+                href={change.github.pullRequest.htmlUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+                className="flex items-center gap-1 font-medium text-primary hover:underline"
+              >
+                PR #{change.github.pullRequest.number}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+            {change.github && <span className="font-mono">{change.github.commit.slice(0, 8)}</span>}
             {change.track && <span className="rounded bg-muted px-1.5 py-0.5 font-medium">{change.track}</span>}
             {change.targetBranch && <span className="font-mono">→ {change.targetBranch}</span>}
+          </div>
+        )}
+
+        {change.archiveWarning && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[10px] text-amber-700 dark:text-amber-300">
+            <Archive className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Merged {new Date(change.archiveWarning.mergedAt).toLocaleDateString()} but still active ·{' '}
+              <a
+                href={change.archiveWarning.htmlUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+                className="font-medium underline"
+              >
+                PR #{change.archiveWarning.pullRequestNumber}
+              </a>
+            </span>
           </div>
         )}
 

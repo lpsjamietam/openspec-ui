@@ -44,4 +44,49 @@ describe('ChangeCard worktree metadata', () => {
     expect(screen.getByText('filesystem fallback')).toBeInTheDocument();
     expect(screen.getByTitle('Skipped by the OpenSpec workflow')).toBeInTheDocument();
   });
+
+  it('shows GitHub PR provenance and a merged-but-unarchived warning', () => {
+    render(
+      <ChangeCard
+        change={{
+          ...worktreeChange,
+          id: 'github-pr-42/add-server-sync',
+          name: 'add-server-sync',
+          sourceId: 'github-pr-42',
+          git: null,
+          track: 'github',
+          github: {
+            repository: 'ToruAI/openspec-ui',
+            refName: 'feature/server-sync',
+            commit: '0123456789abcdef',
+            htmlUrl: 'https://github.com/ToruAI/openspec-ui/pull/42',
+            pullRequest: {
+              number: 42,
+              headRef: 'feature/server-sync',
+              baseRef: 'demo/main',
+              htmlUrl: 'https://github.com/ToruAI/openspec-ui/pull/42',
+            },
+          },
+          archiveWarning: {
+            pullRequestNumber: 41,
+            mergedAt: '2026-07-01T00:00:00Z',
+            htmlUrl: 'https://github.com/ToruAI/openspec-ui/pull/41',
+          },
+        }}
+        onClick={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('PR #42')).toHaveAttribute(
+      'href',
+      'https://github.com/ToruAI/openspec-ui/pull/42',
+    );
+    expect(screen.getByText(/Merged .* but still active/)).toBeInTheDocument();
+    expect(screen.getByText('PR #41')).toBeInTheDocument();
+  });
+
+  it('does not invent an archive warning when merge association is absent', () => {
+    render(<ChangeCard change={{ ...worktreeChange, archiveWarning: null }} onClick={vi.fn()} />);
+    expect(screen.queryByText(/but still active/)).not.toBeInTheDocument();
+  });
 });

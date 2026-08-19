@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Menu, FileText, Folder, Loader2 } from 'lucide-react';
+import { Menu, FileText, Folder, Loader2, GitBranch, ExternalLink } from 'lucide-react';
 import { useSpecs, useSpec } from '../hooks/useApi';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import type { Spec } from '../types';
@@ -26,6 +26,7 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { spec: specDetail, loading: detailLoading } = useSpec(selectedSpecId);
   const isMobile = useIsMobile();
+  const canonicalGithub = specs.find((spec) => spec.github)?.github;
 
   // Filter specs by selected source
   const filteredSpecs = selectedSourceId
@@ -88,7 +89,7 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
   }
 
   // Sidebar content (shared between drawer and fixed sidebar)
-  const SidebarContent = () => (
+  const sidebarContent = (
     <div className="space-y-6">
       {Object.entries(specsBySource).map(([sourceId, sourceSpecs]) => (
         <div key={sourceId}>
@@ -123,7 +124,7 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
   );
 
   // Content area
-  const ContentArea = () => (
+  const contentArea = (
     <div className="p-4 md:p-8 overflow-hidden">
       {selectedSpecId ? (
         detailLoading ? (
@@ -144,6 +145,19 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
                 <div className="text-sm text-muted-foreground mt-1">
                   {specDetail.sourceId}
                 </div>
+                {specDetail.github && (
+                  <a
+                    href={specDetail.github.htmlUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 inline-flex items-center gap-1.5 font-mono text-xs text-primary hover:underline"
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Accepted from {specDetail.github.repository}@{specDetail.github.refName}
+                    {' · '}{specDetail.github.commit.slice(0, 8)}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
               </div>
             </div>
             <article className="prose prose-sm md:prose dark:prose-invert max-w-none prose-headings:font-semibold prose-a:text-primary prose-code:text-sm overflow-hidden break-words">
@@ -196,7 +210,7 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
               </SheetHeader>
               <ScrollArea className="h-[calc(100dvh-5rem)]">
                 <div className="p-4">
-                  <SidebarContent />
+                  {sidebarContent}
                 </div>
               </ScrollArea>
             </SheetContent>
@@ -210,7 +224,7 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
 
         {/* Content */}
         <ScrollArea className="flex-1">
-          <ContentArea />
+          {contentArea}
         </ScrollArea>
       </div>
     );
@@ -229,10 +243,22 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
           <p className="text-xs text-muted-foreground mt-1">
             {filteredSpecs.length} {filteredSpecs.length === 1 ? 'spec' : 'specs'}
           </p>
+          {canonicalGithub && (
+            <a
+              href={canonicalGithub.htmlUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 flex items-center gap-1 text-[10px] font-mono text-primary hover:underline"
+            >
+              <GitBranch className="h-3 w-3" />
+              {canonicalGithub.repository}@{canonicalGithub.refName}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
         </div>
         <ScrollArea className="h-[calc(100%-4.5rem)]">
           <div className="p-3">
-            <SidebarContent />
+            {sidebarContent}
           </div>
         </ScrollArea>
       </div>
@@ -240,7 +266,7 @@ export function SpecsView({ selectedSourceId }: SpecsViewProps) {
       {/* Content */}
       <div className="flex-1 border border-border/50 rounded-xl bg-card/50 backdrop-blur-sm overflow-hidden">
         <ScrollArea className="h-full">
-          <ContentArea />
+          {contentArea}
         </ScrollArea>
       </div>
     </div>

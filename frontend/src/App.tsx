@@ -7,7 +7,8 @@ import { IdeaDetailModal } from './components/IdeaDetailModal';
 import { SettingsModal } from './components/SettingsModal';
 import { IdeaCapture } from './components/IdeaCapture';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { useSSE, useChanges, useSpecs, useSources, useIdeas, useConfig } from './hooks/useApi';
+import { useSSE, useChanges, useSpecs, useSources, useIdeas, useConfig, useSyncHealth } from './hooks/useApi';
+import { Loader2, TriangleAlert } from 'lucide-react';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import type { Change, Idea } from './types';
 import './App.css';
@@ -62,7 +63,9 @@ function App() {
   const { refetch: refetchSpecs } = useSpecs();
   const { ideas, loading: ideasLoading, error: ideasError, refetch: refetchIdeas } = useIdeas();
   const { config, refetch: refetchConfig } = useConfig();
+  const { health: syncHealth, refetch: refetchSyncHealth } = useSyncHealth();
   const readOnly = config?.readOnly ?? true;
+  const hostedUnavailable = config?.sourceMode === 'github' && !syncHealth?.activeRevision;
 
   // Connect to SSE for real-time updates
   const handleUpdate = useCallback(() => {
@@ -71,7 +74,8 @@ function App() {
     refetchSources();
     refetchIdeas();
     refetchConfig();
-  }, [refetchChanges, refetchSpecs, refetchSources, refetchIdeas, refetchConfig]);
+    refetchSyncHealth();
+  }, [refetchChanges, refetchSpecs, refetchSources, refetchIdeas, refetchConfig, refetchSyncHealth]);
 
   useSSE(handleUpdate);
 
@@ -101,9 +105,28 @@ function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenNewIdea={() => setIdeaCaptureOpen(true)}
           readOnly={readOnly}
+          sourceMode={config?.sourceMode ?? 'filesystem'}
+          githubConfig={config?.github ?? null}
+          syncHealth={syncHealth}
         />
         <main className={currentView === 'kanban' ? "px-4 pt-4 md:pt-6" : "max-w-7xl mx-auto px-4 pt-4 md:pt-6"}>
-          {currentView === 'kanban' ? (
+          {hostedUnavailable ? (
+            <div className="mx-auto mt-16 flex max-w-lg flex-col items-center gap-4 rounded-2xl border border-border/60 bg-card/70 p-8 text-center">
+              {syncHealth?.state === 'degraded' ? (
+                <TriangleAlert className="h-10 w-10 text-amber-500" />
+              ) : (
+                <Loader2 className="h-10 w-10 animate-spin text-primary" />
+              )}
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {syncHealth?.state === 'degraded' ? 'GitHub synchronization failed' : 'Preparing the GitHub snapshot'}
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {syncHealth?.lastFailure?.summary ?? 'The first canonical Specs and pull-request Changes are being synchronized.'}
+                </p>
+              </div>
+            </div>
+          ) : currentView === 'kanban' ? (
             <KanbanBoard
               changes={changes}
               ideas={ideas}
@@ -163,6 +186,5 @@ function App() {
 }
 
 export default App;
-
 
 
